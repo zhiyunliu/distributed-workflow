@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/zhiyunliu/distributed-workflow/interfaces"
 	"github.com/zhiyunliu/distributed-workflow/types"
+	"github.com/zhiyunliu/distributed-workflow/worker/executors"
 )
 
 // taskHandle 运行中的任务句柄
@@ -144,6 +146,30 @@ func (m *TaskManager) runTask(ctx context.Context, cancel context.CancelFunc, ke
 
 	endTime := time.Now()
 	errMsg := ""
+
+	// ErrNodeWaiting 是人工任务进入等待状态的哨兵错误，
+	// 需通知引擎将节点标记为 waiting，而非失败。
+	if errors.Is(execErr, executors.ErrNodeWaiting) {
+		log.Info().
+			Str("instance_id", task.InstanceID).
+			Str("node_id", task.NodeID).
+			Msg("task entered human approval waiting state")
+		result := &types.TaskResult{
+			TaskID:       task.TaskID,
+			InstanceID:   task.InstanceID,
+			NodeID:       task.NodeID,
+			Success:      false,
+			OutputData:   nil,
+			ErrorMessage: executors.ErrNodeWaiting.Error(),
+			StartTime:    startTime,
+			EndTime:      endTime,
+		}
+		if err := m.engineRPC.ReportTaskResult(result); err != nil {
+			log.Error().Err(err).Str("task_id", task.TaskID).Msg("report waiting task result failed")
+		}
+		return
+	}
+
 	if execErr != nil {
 		errMsg = execErr.Error()
 		log.Error().Err(execErr).

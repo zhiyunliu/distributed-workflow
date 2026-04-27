@@ -1,6 +1,10 @@
 package interfaces
 
-import "github.com/zhiyunliu/distributed-workflow/types"
+import (
+	"time"
+
+	"github.com/zhiyunliu/distributed-workflow/types"
+)
 
 // WorkflowService 工作流定义管理服务接口
 // 负责工作流定义的 CRUD、流程实例的创建与启动、对外提供 HTTP 触发接口
@@ -103,6 +107,16 @@ type InstanceStateService interface {
 	GetFailedNodes(instanceID string) ([]*types.WorkflowNodeState, error)
 	// GetAssignedNodesByWorker 获取分配给指定 Worker 的节点列表
 	GetAssignedNodesByWorker(workerID string) ([]*types.WorkflowNodeState, error)
+
+	// ─── D3 新增 ───
+	// UpdateNodeApprovalState 更新节点审批状态
+	UpdateNodeApprovalState(instanceID, nodeID string, status types.ApprovalStatus, approverIndex int) error
+	// GetPendingApprovalTasks 查询待审批任务列表
+	GetPendingApprovalTasks(filter types.ApprovalTaskFilter) ([]*types.WorkflowNodeState, error)
+	// AddApprovalRecord 添加审批记录
+	AddApprovalRecord(record *types.ApprovalRecord) error
+	// GetApprovalRecords 获取节点审批记录
+	GetApprovalRecords(instanceID, nodeID string) ([]*types.ApprovalRecord, error)
 }
 
 // WorkerManagerService NodeWorker 管理服务接口
@@ -144,4 +158,50 @@ type HTTPEndpointService interface {
 	Stop() error
 	// RegisterWorkflowEndpoint 注册工作流的 HTTP 触发端点
 	RegisterWorkflowEndpoint(workflowID string, path string) error
+}
+
+// ApprovalService 人工审批服务接口（D3新增）
+type ApprovalService interface {
+	// Approve 审批通过
+	Approve(instanceID, nodeID, approver, comment string, formData map[string]interface{}, operateIP string) error
+	// Reject 审批驳回
+	Reject(instanceID, nodeID, approver, comment string, formData map[string]interface{}, operateIP string) error
+	// GetPendingTasks 获取指定审批人的待审批任务列表
+	GetPendingTasks(filter types.ApprovalTaskFilter) ([]*types.WorkflowNodeState, error)
+	// GetApprovalRecords 获取审批记录
+	GetApprovalRecords(instanceID, nodeID string) ([]*types.ApprovalRecord, error)
+}
+
+// AuditLogService 审计日志服务接口（D3新增）
+type AuditLogService interface {
+	// Record 记录单条审计日志（异步）
+	Record(log *types.WorkflowAuditLog) error
+	// QueryLogs 分页查询审计日志
+	QueryLogs(filter types.AuditLogFilter, page, pageSize int) ([]*types.WorkflowAuditLog, int64, error)
+	// ArchiveLogs 归档历史日志
+	ArchiveLogs(beforeTime time.Time) error
+}
+
+// EndpointManagerService 端点管理服务接口（D3新增）
+type EndpointManagerService interface {
+	// CreateEndpoint 创建端点
+	CreateEndpoint(endpoint *types.WorkflowEndpoint) (string, error)
+	// UpdateEndpoint 更新端点配置
+	UpdateEndpoint(endpoint *types.WorkflowEndpoint) error
+	// GetEndpoint 获取端点详情
+	GetEndpoint(endpointID string) (*types.WorkflowEndpoint, error)
+	// ListEndpoints 查询端点列表
+	ListEndpoints(filter types.EndpointFilter, page, pageSize int) ([]*types.WorkflowEndpoint, int64, error)
+	// StartEndpoint 启用端点
+	StartEndpoint(endpointID string) error
+	// StopEndpoint 禁用端点
+	StopEndpoint(endpointID string) error
+	// DeleteEndpoint 删除端点
+	DeleteEndpoint(endpointID string) error
+	// TriggerEndpoint 手动触发端点（用于测试）
+	TriggerEndpoint(endpointID string, inputData map[string]interface{}) (string, error)
+	// StartScheduleManager 启动定时调度器
+	StartScheduleManager() error
+	// StopScheduleManager 停止定时调度器
+	StopScheduleManager() error
 }

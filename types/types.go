@@ -46,6 +46,8 @@ const (
 	WorkflowNodeStatusCancelled WorkflowNodeStatus = "cancelled"
 	// WorkflowNodeStatusQueued 重试队列中：等待重试执行（D2新增）
 	WorkflowNodeStatusQueued WorkflowNodeStatus = "queued"
+	// WorkflowNodeStatusWaiting 等待中：人工审批节点等待审批完成（D3新增）
+	WorkflowNodeStatusWaiting WorkflowNodeStatus = "waiting"
 )
 
 // ConnectionType 流程连线类型
@@ -98,6 +100,70 @@ const (
 	SubflowCallModeSync SubflowCallMode = "sync"
 	// SubflowCallModeAsync 异步调用：父流程触发子流程后立即继续执行
 	SubflowCallModeAsync SubflowCallMode = "async"
+)
+
+// ApprovalStatus 人工审批状态（D3新增）
+type ApprovalStatus string
+
+const (
+	ApprovalStatusPending   ApprovalStatus = "pending"   // 待审批
+	ApprovalStatusApproved  ApprovalStatus = "approved"  // 已通过
+	ApprovalStatusRejected  ApprovalStatus = "rejected"  // 已驳回
+	ApprovalStatusCancelled ApprovalStatus = "cancelled" // 已取消
+)
+
+// ApprovalMode 审批模式（D3新增）
+type ApprovalMode string
+
+const (
+	ApprovalModeSingle     ApprovalMode = "single"     // 单人审批
+	ApprovalModeOrSign     ApprovalMode = "or_sign"    // 或签：任意一人审批通过即可
+	ApprovalModeSequential ApprovalMode = "sequential" // 顺序审批：按顺序依次审批
+)
+
+// EndpointType 端点类型（D3新增）
+type EndpointType string
+
+const (
+	EndpointTypeHTTP     EndpointType = "http"     // HTTP端点
+	EndpointTypeSchedule EndpointType = "schedule" // 定时端点
+)
+
+// AuditOperationType 审计操作类型（D3新增）
+type AuditOperationType string
+
+const (
+	// 流程定义相关
+	AuditOpWorkflowCreate   AuditOperationType = "workflow.create"
+	AuditOpWorkflowUpdate   AuditOperationType = "workflow.update"
+	AuditOpWorkflowRollback AuditOperationType = "workflow.rollback"
+	AuditOpWorkflowDelete   AuditOperationType = "workflow.delete"
+	// 流程实例相关
+	AuditOpInstanceStart     AuditOperationType = "instance.start"
+	AuditOpInstancePause     AuditOperationType = "instance.pause"
+	AuditOpInstanceResume    AuditOperationType = "instance.resume"
+	AuditOpInstanceCancel    AuditOperationType = "instance.cancel"
+	AuditOpInstanceRetry     AuditOperationType = "instance.retry"
+	AuditOpInstanceCompleted AuditOperationType = "instance.completed"
+	AuditOpInstanceFailed    AuditOperationType = "instance.failed"
+	// 节点执行相关
+	AuditOpNodeStart     AuditOperationType = "node.start"
+	AuditOpNodeCompleted AuditOperationType = "node.completed"
+	AuditOpNodeFailed    AuditOperationType = "node.failed"
+	AuditOpNodeRetry     AuditOperationType = "node.retry"
+	AuditOpNodeSkipped   AuditOperationType = "node.skipped"
+	// 人工审批相关
+	AuditOpApprovalSubmit AuditOperationType = "approval.submit"
+	AuditOpApprovalPass   AuditOperationType = "approval.pass"
+	AuditOpApprovalReject AuditOperationType = "approval.reject"
+	AuditOpApprovalCancel AuditOperationType = "approval.cancel"
+	// 端点相关
+	AuditOpEndpointCreate  AuditOperationType = "endpoint.create"
+	AuditOpEndpointUpdate  AuditOperationType = "endpoint.update"
+	AuditOpEndpointStart   AuditOperationType = "endpoint.start"
+	AuditOpEndpointStop    AuditOperationType = "endpoint.stop"
+	AuditOpEndpointTrigger AuditOperationType = "endpoint.trigger"
+	AuditOpEndpointDelete  AuditOperationType = "endpoint.delete"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -162,6 +228,10 @@ type WorkflowNode struct {
 	IsSubflowNode bool `json:"isSubflowNode"`
 	// SubflowConfig 子流程配置，仅子流程节点生效（D2新增）
 	SubflowConfig *SubflowNodeConfig `json:"subflowConfig"`
+	// HumanTaskConfig 人工任务配置，仅Type=human_task时生效（D3新增）
+	HumanTaskConfig *HumanTaskConfig `json:"humanTaskConfig"`
+	// CallbackConfig 节点生命周期回调配置（D3新增）
+	CallbackConfig *NodeCallbackConfig `json:"callbackConfig"`
 }
 
 // Connection 流程连线，定义节点间的执行顺序与分支规则
@@ -252,6 +322,12 @@ type WorkflowNodeState struct {
 	ErrorCode string `json:"errorCode"`
 	// SkippedReason 跳过原因（D2新增）
 	SkippedReason string `json:"skippedReason"`
+	// ApprovalStatus 审批状态，仅人工节点生效（D3新增）
+	ApprovalStatus ApprovalStatus `json:"approvalStatus"`
+	// CurrentApproverIndex 当前审批人索引，顺序审批时生效（D3新增）
+	CurrentApproverIndex int `json:"currentApproverIndex"`
+	// ApprovalRecords 审批记录列表（D3新增）
+	ApprovalRecords []*ApprovalRecord `json:"approvalRecords"`
 }
 
 // WorkflowContext 流程执行上下文，用于节点间数据传递
@@ -436,4 +512,142 @@ type DeadLetterTask struct {
 	ResendCount int `json:"resendCount"`
 	// LastResendAt 最后一次重发时间
 	LastResendAt *time.Time `json:"lastResendAt,omitempty"`
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D3 新增类型
+// ─────────────────────────────────────────────────────────────────────────────
+
+// HumanTaskConfig 人工任务节点配置（D3新增）
+type HumanTaskConfig struct {
+	// Title 审批标题
+	Title string `json:"title"`
+	// Description 审批描述
+	Description string `json:"description"`
+	// ApprovalMode 审批模式，默认single
+	ApprovalMode ApprovalMode `json:"approvalMode"`
+	// Approvers 审批人列表，顺序审批时按列表顺序执行
+	Approvers []string `json:"approvers"`
+	// Timeout 审批超时时间，单位秒，0表示不限制
+	Timeout int `json:"timeout"`
+	// TimeoutAction 超时动作：pass/reject/skip
+	TimeoutAction string `json:"timeoutAction"`
+	// RejectAction 驳回动作：terminate/goto
+	RejectAction string `json:"rejectAction"`
+	// RejectGotoNodeId 驳回后跳转的节点ID，仅RejectAction=goto时生效
+	RejectGotoNodeId string `json:"rejectGotoNodeId"`
+	// FormFields 审批表单字段定义
+	FormFields []FormField `json:"formFields"`
+	// Webhook 审批状态变更回调地址
+	Webhook string `json:"webhook"`
+}
+
+// FormField 审批表单字段定义（D3新增）
+type FormField struct {
+	FieldKey     string            `json:"fieldKey"`
+	FieldName    string            `json:"fieldName"`
+	FieldType    string            `json:"fieldType"`
+	Required     bool              `json:"required"`
+	DefaultValue interface{}       `json:"defaultValue"`
+	Options      []FormFieldOption `json:"options"`
+}
+
+// FormFieldOption 表单下拉选项（D3新增）
+type FormFieldOption struct {
+	Label string      `json:"label"`
+	Value interface{} `json:"value"`
+}
+
+// ApprovalRecord 审批记录（D3新增）
+type ApprovalRecord struct {
+	ID          string                 `json:"id"`
+	InstanceID  string                 `json:"instanceId"`
+	NodeID      string                 `json:"nodeId"`
+	Approver    string                 `json:"approver"`
+	Action      string                 `json:"action"`
+	Comment     string                 `json:"comment"`
+	FormData    map[string]interface{} `json:"formData"`
+	OperateTime time.Time              `json:"operateTime"`
+	OperateIP   string                 `json:"operateIp"`
+}
+
+// NodeCallbackConfig 节点回调配置（D3新增）
+type NodeCallbackConfig struct {
+	OnStart    string `json:"onStart"`
+	OnComplete string `json:"onComplete"`
+	OnFail     string `json:"onFail"`
+	Timeout    int    `json:"timeout"`
+	RetryCount int    `json:"retryCount"`
+}
+
+// ScheduleEndpointConfig 定时端点配置（D3新增）
+type ScheduleEndpointConfig struct {
+	// CronExpression Cron表达式，5字段：分 时 日 月 周
+	CronExpression  string                 `json:"cronExpression"`
+	InputData       map[string]interface{} `json:"inputData"`
+	CreatedBy       string                 `json:"createdBy"`
+	MaxTriggerCount int                    `json:"maxTriggerCount"`
+	TriggeredCount  int                    `json:"triggeredCount"`
+	StartTime       *time.Time             `json:"startTime,omitempty"`
+	EndTime         *time.Time             `json:"endTime,omitempty"`
+	MisfireStrategy string                 `json:"misfireStrategy"`
+}
+
+// WorkflowEndpoint 端点定义（D3新增）
+type WorkflowEndpoint struct {
+	ID             string                  `json:"id"`
+	Name           string                  `json:"name"`
+	Type           EndpointType            `json:"type"`
+	WorkflowID     string                  `json:"workflowId"`
+	Config         map[string]interface{}  `json:"config"`
+	CreatedAt      time.Time               `json:"createdAt"`
+	UpdatedAt      time.Time               `json:"updatedAt"`
+	CreatedBy      string                  `json:"createdBy"`
+	Disabled       bool                    `json:"disabled"`
+	ScheduleConfig *ScheduleEndpointConfig `json:"scheduleConfig"`
+	Path           string                  `json:"path"`
+}
+
+// WorkflowAuditLog 审计日志结构体（D3新增）
+type WorkflowAuditLog struct {
+	ID            string                 `json:"id"`
+	InstanceID    string                 `json:"instanceId"`
+	NodeID        string                 `json:"nodeId"`
+	WorkflowID    string                 `json:"workflowId"`
+	EndpointID    string                 `json:"endpointId"`
+	OperationType AuditOperationType     `json:"operationType"`
+	Operator      string                 `json:"operator"`
+	OperateIP     string                 `json:"operateIp"`
+	OperateTime   time.Time              `json:"operateTime"`
+	BeforeData    map[string]interface{} `json:"beforeData"`
+	AfterData     map[string]interface{} `json:"afterData"`
+	Detail        string                 `json:"detail"`
+	TraceID       string                 `json:"traceId"`
+}
+
+// AuditLogFilter 审计日志查询过滤器（D3新增）
+type AuditLogFilter struct {
+	WorkflowID    string
+	InstanceID    string
+	NodeID        string
+	EndpointID    string
+	OperationType []AuditOperationType
+	Operator      string
+	StartTime     *time.Time
+	EndTime       *time.Time
+}
+
+// ApprovalTaskFilter 待审批任务查询过滤器（D3新增）
+type ApprovalTaskFilter struct {
+	Approver   string
+	InstanceID string
+	NodeID     string
+	WorkflowID string
+}
+
+// EndpointFilter 端点查询过滤器（D3新增）
+type EndpointFilter struct {
+	Type       EndpointType
+	WorkflowID string
+	Disabled   *bool
 }

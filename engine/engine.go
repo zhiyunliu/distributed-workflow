@@ -30,6 +30,12 @@ type Engine struct {
 	state      *InstanceStateServiceImpl
 	engineSrv  *EngineServer
 	failover   interfaces.FailoverManager
+
+	// D3 组件
+	auditLogMgr interfaces.AuditLogManager
+	approvalSvc interfaces.ApprovalService
+	auditSvc    interfaces.AuditLogService
+	endpointMgr interfaces.EndpointManagerService
 }
 
 // New 创建引擎实例
@@ -67,6 +73,13 @@ func New(
 
 	engineSrv := NewEngineServer(workerMgrImpl, stateImpl)
 
+	// D3 组件
+	auditLogMgr := NewAuditLogManager(repo)
+	auditSvc := NewAuditLogService(auditLogMgr)
+	approvalSvcImpl := NewApprovalService(repo, stateImpl, auditLogMgr).(*approvalServiceImpl)
+	approvalSvcImpl.SetScheduler(sched)
+	endpointMgr := NewEndpointManager(repo, auditLogMgr, svc)
+
 	grpcServer := grpc.NewServer()
 	engineSrv.RegisterServer(grpcServer)
 
@@ -79,6 +92,12 @@ func New(
 		state:      stateImpl,
 		engineSrv:  engineSrv,
 		failover:   failoverMgr,
+
+		// D3
+		auditLogMgr: auditLogMgr,
+		approvalSvc: approvalSvcImpl,
+		auditSvc:    auditSvc,
+		endpointMgr: endpointMgr,
 	}
 }
 
@@ -92,6 +111,21 @@ func (e *Engine) SchedulerService() interfaces.SchedulerService {
 	return e.sched
 }
 
+// ApprovalService 暴露审批服务（D3）
+func (e *Engine) ApprovalService() interfaces.ApprovalService {
+	return e.approvalSvc
+}
+
+// AuditLogService 暴露审计日志服务（D3）
+func (e *Engine) AuditLogService() interfaces.AuditLogService {
+	return e.auditSvc
+}
+
+// EndpointManagerService 暴露端点管理服务（D3）
+func (e *Engine) EndpointManagerService() interfaces.EndpointManagerService {
+	return e.endpointMgr
+}
+
 // Start 启动引擎：监听 gRPC 端口 + 恢复未完成实例 + 启动健康检查
 func (e *Engine) Start() error {
 	lis, err := net.Listen("tcp", e.cfg.GRPCAddr)
@@ -99,6 +133,14 @@ func (e *Engine) Start() error {
 		return fmt.Errorf("listen '%s': %w", e.cfg.GRPCAddr, err)
 	}
 	e.listener = lis
+
+	// 启动 D3 审计日志管理器
+	e.auditLogMgr.Start()
+
+	// 启动 D3 定时端点调度器
+	if err := e.endpointMgr.StartScheduleManager(); err != nil {
+		log.Error().Err(err).Msg("start schedule manager failed")
+	}
 
 	// 恢复未完成实例
 	if err := e.sched.RecoverUnfinishedInstances(); err != nil {
@@ -121,6 +163,8 @@ func (e *Engine) Start() error {
 func (e *Engine) Stop() {
 	log.Info().Msg("engine stopping")
 	e.failover.StopHealthCheckLoop()
+	_ = e.endpointMgr.StopScheduleManager()
+	e.auditLogMgr.Stop()
 	e.grpcServer.GracefulStop()
 }
 

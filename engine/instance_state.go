@@ -69,6 +69,20 @@ func (s *InstanceStateServiceImpl) ReportTaskResult(result *types.TaskResult) er
 		return fmt.Errorf("get node state '%s/%s': %w", result.InstanceID, result.NodeID, err)
 	}
 
+	// 人工任务等待状态：不调度后续节点，等待审批服务驱动
+	if result.ErrorMessage == "node is waiting for human approval" {
+		state.Status = types.WorkflowNodeStatusWaiting
+		state.ApprovalStatus = types.ApprovalStatusPending
+		if err := s.repo.UpdateWorkflowNodeState(state); err != nil {
+			return fmt.Errorf("update node state to waiting: %w", err)
+		}
+		log.Info().
+			Str("instance_id", result.InstanceID).
+			Str("node_id", result.NodeID).
+			Msg("task entered human approval waiting state")
+		return nil
+	}
+
 	now := result.EndTime
 	state.EndTime = &now
 	state.OutputData = result.OutputData
@@ -150,4 +164,32 @@ func (s *InstanceStateServiceImpl) GetFailedNodes(instanceID string) ([]*types.W
 // GetAssignedNodesByWorker 获取分配给指定 Worker 的节点
 func (s *InstanceStateServiceImpl) GetAssignedNodesByWorker(workerID string) ([]*types.WorkflowNodeState, error) {
 	return s.repo.GetAssignedNodesByWorker(workerID)
+}
+
+// ─── D3 新增 ───
+
+// UpdateNodeApprovalState 更新节点审批状态
+func (s *InstanceStateServiceImpl) UpdateNodeApprovalState(instanceID, nodeID string, status types.ApprovalStatus, approverIndex int) error {
+	state, err := s.repo.GetWorkflowNodeState(instanceID, nodeID)
+	if err != nil {
+		return fmt.Errorf("UpdateNodeApprovalState get state: %w", err)
+	}
+	state.ApprovalStatus = status
+	state.CurrentApproverIndex = approverIndex
+	return s.repo.UpdateWorkflowNodeState(state)
+}
+
+// GetPendingApprovalTasks 查询待审批任务列表
+func (s *InstanceStateServiceImpl) GetPendingApprovalTasks(filter types.ApprovalTaskFilter) ([]*types.WorkflowNodeState, error) {
+	return s.repo.GetPendingApprovalNodeStates(filter)
+}
+
+// AddApprovalRecord 添加审批记录
+func (s *InstanceStateServiceImpl) AddApprovalRecord(record *types.ApprovalRecord) error {
+	return s.repo.CreateApprovalRecord(record)
+}
+
+// GetApprovalRecords 获取节点审批记录
+func (s *InstanceStateServiceImpl) GetApprovalRecords(instanceID, nodeID string) ([]*types.ApprovalRecord, error) {
+	return s.repo.GetApprovalRecords(instanceID, nodeID)
 }

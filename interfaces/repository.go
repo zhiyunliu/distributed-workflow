@@ -82,6 +82,40 @@ type WorkflowRepository interface {
 	ListDeadLetterTasks(instanceID string) ([]*types.DeadLetterTask, error)
 	// UpdateDeadLetterTask 更新死信任务（重发计数等）
 	UpdateDeadLetterTask(task *types.DeadLetterTask) error
+
+	// ─── 审计日志（D3新增） ──────────────────────────────────────────
+	// CreateAuditLog 创建单条审计日志
+	CreateAuditLog(log *types.WorkflowAuditLog) error
+	// BatchCreateAuditLogs 批量创建审计日志
+	BatchCreateAuditLogs(logs []*types.WorkflowAuditLog) error
+	// QueryAuditLogs 分页查询审计日志
+	QueryAuditLogs(filter types.AuditLogFilter, page, pageSize int) ([]*types.WorkflowAuditLog, int64, error)
+	// GetAuditLog 获取单条审计日志
+	GetAuditLog(logID string) (*types.WorkflowAuditLog, error)
+	// ArchiveAuditLogs 归档指定时间之前的审计日志
+	ArchiveAuditLogs(beforeTime time.Time) error
+
+	// ─── 审批记录（D3新增） ──────────────────────────────────────────
+	// CreateApprovalRecord 创建审批记录
+	CreateApprovalRecord(record *types.ApprovalRecord) error
+	// GetApprovalRecords 获取节点审批记录列表
+	GetApprovalRecords(instanceID, nodeID string) ([]*types.ApprovalRecord, error)
+	// GetPendingApprovalNodeStates 查询待审批节点状态
+	GetPendingApprovalNodeStates(filter types.ApprovalTaskFilter) ([]*types.WorkflowNodeState, error)
+
+	// ─── 端点管理（D3新增） ──────────────────────────────────────────
+	// CreateEndpoint 创建端点
+	CreateEndpoint(endpoint *types.WorkflowEndpoint) error
+	// GetEndpoint 获取端点
+	GetEndpoint(endpointID string) (*types.WorkflowEndpoint, error)
+	// UpdateEndpoint 更新端点
+	UpdateEndpoint(endpoint *types.WorkflowEndpoint) error
+	// DeleteEndpoint 删除端点
+	DeleteEndpoint(endpointID string) error
+	// ListEndpoints 查询端点列表
+	ListEndpoints(filter types.EndpointFilter, page, pageSize int) ([]*types.WorkflowEndpoint, int64, error)
+	// UpdateEndpointTriggeredCount 更新端点触发计数
+	UpdateEndpointTriggeredCount(endpointID string, count int) error
 }
 
 // RedisRepository Redis 存储接口

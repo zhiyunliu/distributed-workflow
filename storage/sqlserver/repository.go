@@ -1244,3 +1244,608 @@ func scanDeadLetterTaskRow(rows *sql.Rows) (*types.DeadLetterTask, error) {
 	}
 	return &t, nil
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D3: 审计日志
+// ─────────────────────────────────────────────────────────────────────────────
+
+// CreateAuditLog 创建单条审计日志
+func (r *Repository) CreateAuditLog(auditLog *types.WorkflowAuditLog) error {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	var beforeJSON, afterJSON []byte
+	if auditLog.BeforeData != nil {
+		beforeJSON, _ = json.Marshal(auditLog.BeforeData)
+	}
+	if auditLog.AfterData != nil {
+		afterJSON, _ = json.Marshal(auditLog.AfterData)
+	}
+
+	const q = `
+INSERT INTO workflow_instance_logs
+(id, instance_id, node_id, workflow_id, endpoint_id, operation_type,
+ operator, operate_ip, operate_time, before_data, after_data, detail, trace_id)
+VALUES
+(@id, @instanceId, @nodeId, @workflowId, @endpointId, @operationType,
+ @operator, @operateIp, @operateTime, @beforeData, @afterData, @detail, @traceId)`
+
+	_, err := r.db.ExecContext(ctx, q,
+		sql.Named("id", auditLog.ID),
+		sql.Named("instanceId", auditLog.InstanceID),
+		sql.Named("nodeId", auditLog.NodeID),
+		sql.Named("workflowId", auditLog.WorkflowID),
+		sql.Named("endpointId", auditLog.EndpointID),
+		sql.Named("operationType", string(auditLog.OperationType)),
+		sql.Named("operator", auditLog.Operator),
+		sql.Named("operateIp", auditLog.OperateIP),
+		sql.Named("operateTime", auditLog.OperateTime),
+		sql.Named("beforeData", nullStr(string(beforeJSON))),
+		sql.Named("afterData", nullStr(string(afterJSON))),
+		sql.Named("detail", auditLog.Detail),
+		sql.Named("traceId", auditLog.TraceID),
+	)
+	return wrapDBErr(err, "CreateAuditLog")
+}
+
+// BatchCreateAuditLogs 批量创建审计日志
+func (r *Repository) BatchCreateAuditLogs(logs []*types.WorkflowAuditLog) error {
+	if len(logs) == 0 {
+		return nil
+	}
+	for _, l := range logs {
+		if err := r.CreateAuditLog(l); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// QueryAuditLogs 分页查询审计日志
+func (r *Repository) QueryAuditLogs(filter types.AuditLogFilter, page, pageSize int) ([]*types.WorkflowAuditLog, int64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	where := " WHERE 1=1"
+	args := []interface{}{}
+
+	if filter.WorkflowID != "" {
+		where += " AND workflow_id = @workflowId"
+		args = append(args, sql.Named("workflowId", filter.WorkflowID))
+	}
+	if filter.InstanceID != "" {
+		where += " AND instance_id = @instanceId"
+		args = append(args, sql.Named("instanceId", filter.InstanceID))
+	}
+	if filter.NodeID != "" {
+		where += " AND node_id = @nodeId"
+		args = append(args, sql.Named("nodeId", filter.NodeID))
+	}
+	if filter.EndpointID != "" {
+		where += " AND endpoint_id = @endpointId"
+		args = append(args, sql.Named("endpointId", filter.EndpointID))
+	}
+	if filter.Operator != "" {
+		where += " AND operator = @operator"
+		args = append(args, sql.Named("operator", filter.Operator))
+	}
+	if filter.StartTime != nil {
+		where += " AND operate_time >= @startTime"
+		args = append(args, sql.Named("startTime", *filter.StartTime))
+	}
+	if filter.EndTime != nil {
+		where += " AND operate_time <= @endTime"
+		args = append(args, sql.Named("endTime", *filter.EndTime))
+	}
+
+	countQ := "SELECT COUNT(*) FROM workflow_instance_logs" + where
+	var total int64
+	if err := r.db.QueryRowContext(ctx, countQ, args...).Scan(&total); err != nil {
+		return nil, 0, wrapDBErr(err, "QueryAuditLogs.count")
+	}
+
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	offset := (page - 1) * pageSize
+
+	dataQ := "SELECT id, instance_id, node_id, workflow_id, endpoint_id, operation_type, " +
+		"operator, operate_ip, operate_time, before_data, after_data, detail, trace_id " +
+		"FROM workflow_instance_logs" + where +
+		" ORDER BY operate_time DESC OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY"
+	args = append(args, sql.Named("offset", offset), sql.Named("pageSize", pageSize))
+
+	rows, err := r.db.QueryContext(ctx, dataQ, args...)
+	if err != nil {
+		return nil, 0, wrapDBErr(err, "QueryAuditLogs.query")
+	}
+	defer rows.Close()
+
+	var result []*types.WorkflowAuditLog
+	for rows.Next() {
+		l, scanErr := scanAuditLogRow(rows)
+		if scanErr != nil {
+			return nil, 0, scanErr
+		}
+		result = append(result, l)
+	}
+	return result, total, rows.Err()
+}
+
+// GetAuditLog 获取单条审计日志
+func (r *Repository) GetAuditLog(logID string) (*types.WorkflowAuditLog, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	const q = `
+SELECT id, instance_id, node_id, workflow_id, endpoint_id, operation_type,
+       operator, operate_ip, operate_time, before_data, after_data, detail, trace_id
+FROM workflow_instance_logs WHERE id = @id`
+
+	row := r.db.QueryRowContext(ctx, q, sql.Named("id", logID))
+	return scanAuditLog(row)
+}
+
+// ArchiveAuditLogs 归档（物理删除）指定时间之前的审计日志
+func (r *Repository) ArchiveAuditLogs(beforeTime time.Time) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	const q = `DELETE FROM workflow_instance_logs WHERE operate_time < @beforeTime`
+	_, err := r.db.ExecContext(ctx, q, sql.Named("beforeTime", beforeTime))
+	return wrapDBErr(err, "ArchiveAuditLogs")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D3: 审批记录
+// ─────────────────────────────────────────────────────────────────────────────
+
+// CreateApprovalRecord 创建审批记录
+func (r *Repository) CreateApprovalRecord(record *types.ApprovalRecord) error {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	var formJSON []byte
+	if record.FormData != nil {
+		formJSON, _ = json.Marshal(record.FormData)
+	}
+
+	const q = `
+INSERT INTO workflow_approval_records
+(id, instance_id, node_id, approver, action, comment, form_data, operate_time, operate_ip)
+VALUES
+(@id, @instanceId, @nodeId, @approver, @action, @comment, @formData, @operateTime, @operateIp)`
+
+	_, err := r.db.ExecContext(ctx, q,
+		sql.Named("id", record.ID),
+		sql.Named("instanceId", record.InstanceID),
+		sql.Named("nodeId", record.NodeID),
+		sql.Named("approver", record.Approver),
+		sql.Named("action", record.Action),
+		sql.Named("comment", record.Comment),
+		sql.Named("formData", nullStr(string(formJSON))),
+		sql.Named("operateTime", record.OperateTime),
+		sql.Named("operateIp", record.OperateIP),
+	)
+	return wrapDBErr(err, "CreateApprovalRecord")
+}
+
+// GetApprovalRecords 获取节点审批记录列表
+func (r *Repository) GetApprovalRecords(instanceID, nodeID string) ([]*types.ApprovalRecord, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	const q = `
+SELECT id, instance_id, node_id, approver, action, comment, form_data, operate_time, operate_ip
+FROM workflow_approval_records
+WHERE instance_id = @instanceId AND node_id = @nodeId
+ORDER BY operate_time ASC`
+
+	rows, err := r.db.QueryContext(ctx, q,
+		sql.Named("instanceId", instanceID),
+		sql.Named("nodeId", nodeID),
+	)
+	if err != nil {
+		return nil, wrapDBErr(err, "GetApprovalRecords")
+	}
+	defer rows.Close()
+
+	var records []*types.ApprovalRecord
+	for rows.Next() {
+		rec, scanErr := scanApprovalRecordRow(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		records = append(records, rec)
+	}
+	return records, rows.Err()
+}
+
+// GetPendingApprovalNodeStates 查询待审批节点状态
+func (r *Repository) GetPendingApprovalNodeStates(filter types.ApprovalTaskFilter) ([]*types.WorkflowNodeState, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	where := " WHERE ns.approval_status = 'pending' AND ns.status = 'waiting'"
+	args := []interface{}{}
+
+	if filter.InstanceID != "" {
+		where += " AND ns.instance_id = @instanceId"
+		args = append(args, sql.Named("instanceId", filter.InstanceID))
+	}
+	if filter.NodeID != "" {
+		where += " AND ns.node_id = @nodeId"
+		args = append(args, sql.Named("nodeId", filter.NodeID))
+	}
+
+	q := "SELECT ns.id, ns.instance_id, ns.node_id, ns.status, ns.assigned_to, ns.worker_ip, " +
+		"ns.start_time, ns.end_time, ns.input_data, ns.output_data, ns.error_message, " +
+		"ns.retry_count, ns.next_retry_time, ns.last_retry_time, ns.error_code, ns.skipped_reason, " +
+		"ns.approval_status, ns.current_approver_index " +
+		"FROM workflow_node_states ns" + where + " ORDER BY ns.id ASC"
+
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, wrapDBErr(err, "GetPendingApprovalNodeStates")
+	}
+	defer rows.Close()
+
+	var states []*types.WorkflowNodeState
+	for rows.Next() {
+		ns, scanErr := scanNodeStateRowD3(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		states = append(states, ns)
+	}
+	return states, rows.Err()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D3: 端点管理
+// ─────────────────────────────────────────────────────────────────────────────
+
+// CreateEndpoint 创建端点
+func (r *Repository) CreateEndpoint(endpoint *types.WorkflowEndpoint) error {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	var cfgJSON, schedCfgJSON []byte
+	if endpoint.Config != nil {
+		cfgJSON, _ = json.Marshal(endpoint.Config)
+	}
+	if endpoint.ScheduleConfig != nil {
+		schedCfgJSON, _ = json.Marshal(endpoint.ScheduleConfig)
+	}
+
+	const q = `
+INSERT INTO workflow_endpoints
+(id, name, type, workflow_id, config, schedule_config, path, created_by, disabled, created_at, updated_at)
+VALUES
+(@id, @name, @type, @workflowId, @config, @scheduleConfig, @path, @createdBy, @disabled, @createdAt, @updatedAt)`
+
+	_, err := r.db.ExecContext(ctx, q,
+		sql.Named("id", endpoint.ID),
+		sql.Named("name", endpoint.Name),
+		sql.Named("type", string(endpoint.Type)),
+		sql.Named("workflowId", endpoint.WorkflowID),
+		sql.Named("config", nullStr(string(cfgJSON))),
+		sql.Named("scheduleConfig", nullStr(string(schedCfgJSON))),
+		sql.Named("path", endpoint.Path),
+		sql.Named("createdBy", endpoint.CreatedBy),
+		sql.Named("disabled", endpoint.Disabled),
+		sql.Named("createdAt", endpoint.CreatedAt),
+		sql.Named("updatedAt", endpoint.UpdatedAt),
+	)
+	return wrapDBErr(err, "CreateEndpoint")
+}
+
+// GetEndpoint 获取端点
+func (r *Repository) GetEndpoint(endpointID string) (*types.WorkflowEndpoint, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	const q = `
+SELECT id, name, type, workflow_id, config, schedule_config, path, created_by, disabled, created_at, updated_at
+FROM workflow_endpoints WHERE id = @id`
+
+	row := r.db.QueryRowContext(ctx, q, sql.Named("id", endpointID))
+	return scanEndpoint(row)
+}
+
+// UpdateEndpoint 更新端点
+func (r *Repository) UpdateEndpoint(endpoint *types.WorkflowEndpoint) error {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	var cfgJSON, schedCfgJSON []byte
+	if endpoint.Config != nil {
+		cfgJSON, _ = json.Marshal(endpoint.Config)
+	}
+	if endpoint.ScheduleConfig != nil {
+		schedCfgJSON, _ = json.Marshal(endpoint.ScheduleConfig)
+	}
+
+	const q = `
+UPDATE workflow_endpoints
+SET name = @name, config = @config, schedule_config = @scheduleConfig,
+    path = @path, disabled = @disabled, updated_at = @updatedAt
+WHERE id = @id`
+
+	_, err := r.db.ExecContext(ctx, q,
+		sql.Named("name", endpoint.Name),
+		sql.Named("config", nullStr(string(cfgJSON))),
+		sql.Named("scheduleConfig", nullStr(string(schedCfgJSON))),
+		sql.Named("path", endpoint.Path),
+		sql.Named("disabled", endpoint.Disabled),
+		sql.Named("updatedAt", endpoint.UpdatedAt),
+		sql.Named("id", endpoint.ID),
+	)
+	return wrapDBErr(err, "UpdateEndpoint")
+}
+
+// DeleteEndpoint 删除端点
+func (r *Repository) DeleteEndpoint(endpointID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	const q = `DELETE FROM workflow_endpoints WHERE id = @id`
+	_, err := r.db.ExecContext(ctx, q, sql.Named("id", endpointID))
+	return wrapDBErr(err, "DeleteEndpoint")
+}
+
+// ListEndpoints 查询端点列表
+func (r *Repository) ListEndpoints(filter types.EndpointFilter, page, pageSize int) ([]*types.WorkflowEndpoint, int64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	where := " WHERE 1=1"
+	args := []interface{}{}
+
+	if filter.WorkflowID != "" {
+		where += " AND workflow_id = @workflowId"
+		args = append(args, sql.Named("workflowId", filter.WorkflowID))
+	}
+	if string(filter.Type) != "" {
+		where += " AND type = @type"
+		args = append(args, sql.Named("type", string(filter.Type)))
+	}
+	if filter.Disabled != nil {
+		where += " AND disabled = @disabled"
+		args = append(args, sql.Named("disabled", *filter.Disabled))
+	}
+
+	var total int64
+	countQ := "SELECT COUNT(*) FROM workflow_endpoints" + where
+	if err := r.db.QueryRowContext(ctx, countQ, args...).Scan(&total); err != nil {
+		return nil, 0, wrapDBErr(err, "ListEndpoints.count")
+	}
+
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	offset := (page - 1) * pageSize
+
+	dataQ := "SELECT id, name, type, workflow_id, config, schedule_config, path, created_by, disabled, created_at, updated_at " +
+		"FROM workflow_endpoints" + where +
+		" ORDER BY created_at DESC OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY"
+	args = append(args, sql.Named("offset", offset), sql.Named("pageSize", pageSize))
+
+	rows, err := r.db.QueryContext(ctx, dataQ, args...)
+	if err != nil {
+		return nil, 0, wrapDBErr(err, "ListEndpoints.query")
+	}
+	defer rows.Close()
+
+	var endpoints []*types.WorkflowEndpoint
+	for rows.Next() {
+		ep, scanErr := scanEndpointRow(rows)
+		if scanErr != nil {
+			return nil, 0, scanErr
+		}
+		endpoints = append(endpoints, ep)
+	}
+	return endpoints, total, rows.Err()
+}
+
+// UpdateEndpointTriggeredCount 更新端点触发计数
+func (r *Repository) UpdateEndpointTriggeredCount(endpointID string, count int) error {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	const q = `
+UPDATE workflow_endpoints
+SET schedule_config = JSON_MODIFY(schedule_config, '$.triggeredCount', @count), updated_at = @updatedAt
+WHERE id = @id`
+
+	_, err := r.db.ExecContext(ctx, q,
+		sql.Named("count", count),
+		sql.Named("updatedAt", time.Now().UTC()),
+		sql.Named("id", endpointID),
+	)
+	return wrapDBErr(err, "UpdateEndpointTriggeredCount")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D3 私有扫描函数
+// ─────────────────────────────────────────────────────────────────────────────
+
+func nullStr(s string) sql.NullString {
+	if s == "" || s == "null" {
+		return sql.NullString{Valid: false}
+	}
+	return sql.NullString{String: s, Valid: true}
+}
+
+func scanAuditLog(row *sql.Row) (*types.WorkflowAuditLog, error) {
+	var l types.WorkflowAuditLog
+	var beforeJSON, afterJSON sql.NullString
+
+	err := row.Scan(
+		&l.ID, &l.InstanceID, &l.NodeID, &l.WorkflowID, &l.EndpointID,
+		&l.OperationType, &l.Operator, &l.OperateIP, &l.OperateTime,
+		&beforeJSON, &afterJSON, &l.Detail, &l.TraceID,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("audit log not found")
+		}
+		return nil, wrapDBErr(err, "scanAuditLog")
+	}
+	if beforeJSON.Valid && beforeJSON.String != "" {
+		_ = json.Unmarshal([]byte(beforeJSON.String), &l.BeforeData)
+	}
+	if afterJSON.Valid && afterJSON.String != "" {
+		_ = json.Unmarshal([]byte(afterJSON.String), &l.AfterData)
+	}
+	return &l, nil
+}
+
+func scanAuditLogRow(rows *sql.Rows) (*types.WorkflowAuditLog, error) {
+	var l types.WorkflowAuditLog
+	var beforeJSON, afterJSON sql.NullString
+
+	err := rows.Scan(
+		&l.ID, &l.InstanceID, &l.NodeID, &l.WorkflowID, &l.EndpointID,
+		&l.OperationType, &l.Operator, &l.OperateIP, &l.OperateTime,
+		&beforeJSON, &afterJSON, &l.Detail, &l.TraceID,
+	)
+	if err != nil {
+		return nil, wrapDBErr(err, "scanAuditLogRow")
+	}
+	if beforeJSON.Valid && beforeJSON.String != "" {
+		_ = json.Unmarshal([]byte(beforeJSON.String), &l.BeforeData)
+	}
+	if afterJSON.Valid && afterJSON.String != "" {
+		_ = json.Unmarshal([]byte(afterJSON.String), &l.AfterData)
+	}
+	return &l, nil
+}
+
+func scanApprovalRecordRow(rows *sql.Rows) (*types.ApprovalRecord, error) {
+	var rec types.ApprovalRecord
+	var formJSON sql.NullString
+
+	err := rows.Scan(
+		&rec.ID, &rec.InstanceID, &rec.NodeID,
+		&rec.Approver, &rec.Action, &rec.Comment,
+		&formJSON, &rec.OperateTime, &rec.OperateIP,
+	)
+	if err != nil {
+		return nil, wrapDBErr(err, "scanApprovalRecordRow")
+	}
+	if formJSON.Valid && formJSON.String != "" {
+		_ = json.Unmarshal([]byte(formJSON.String), &rec.FormData)
+	}
+	return &rec, nil
+}
+
+func scanNodeStateRowD3(rows *sql.Rows) (*types.WorkflowNodeState, error) {
+	var ns types.WorkflowNodeState
+	var assignedTo, workerIP, errMsg, inputJSON, outputJSON, errCode, skippedReason, approvalStatus sql.NullString
+	var startTime, endTime, nextRetryTime, lastRetryTime sql.NullTime
+	var currentApproverIndex sql.NullInt32
+
+	err := rows.Scan(
+		&ns.ID, &ns.InstanceID, &ns.NodeID, &ns.Status, &assignedTo, &workerIP,
+		&startTime, &endTime, &inputJSON, &outputJSON, &errMsg,
+		&ns.RetryCount, &nextRetryTime, &lastRetryTime, &errCode, &skippedReason,
+		&approvalStatus, &currentApproverIndex,
+	)
+	if err != nil {
+		return nil, wrapDBErr(err, "scanNodeStateRowD3")
+	}
+	if assignedTo.Valid {
+		ns.AssignedTo = assignedTo.String
+	}
+	if workerIP.Valid {
+		ns.WorkerIP = workerIP.String
+	}
+	if errMsg.Valid {
+		ns.ErrorMessage = errMsg.String
+	}
+	if inputJSON.Valid && inputJSON.String != "" {
+		_ = json.Unmarshal([]byte(inputJSON.String), &ns.InputData)
+	}
+	if outputJSON.Valid && outputJSON.String != "" {
+		_ = json.Unmarshal([]byte(outputJSON.String), &ns.OutputData)
+	}
+	if errCode.Valid {
+		ns.ErrorCode = errCode.String
+	}
+	if skippedReason.Valid {
+		ns.SkippedReason = skippedReason.String
+	}
+	if startTime.Valid {
+		ns.StartTime = &startTime.Time
+	}
+	if endTime.Valid {
+		ns.EndTime = &endTime.Time
+	}
+	if nextRetryTime.Valid {
+		ns.NextRetryTime = &nextRetryTime.Time
+	}
+	if lastRetryTime.Valid {
+		ns.LastRetryTime = &lastRetryTime.Time
+	}
+	if approvalStatus.Valid {
+		ns.ApprovalStatus = types.ApprovalStatus(approvalStatus.String)
+	}
+	if currentApproverIndex.Valid {
+		ns.CurrentApproverIndex = int(currentApproverIndex.Int32)
+	}
+	return &ns, nil
+}
+
+func scanEndpoint(row *sql.Row) (*types.WorkflowEndpoint, error) {
+	var ep types.WorkflowEndpoint
+	var cfgJSON, schedCfgJSON sql.NullString
+
+	err := row.Scan(
+		&ep.ID, &ep.Name, &ep.Type, &ep.WorkflowID,
+		&cfgJSON, &schedCfgJSON, &ep.Path, &ep.CreatedBy,
+		&ep.Disabled, &ep.CreatedAt, &ep.UpdatedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("endpoint not found")
+		}
+		return nil, wrapDBErr(err, "scanEndpoint")
+	}
+	if cfgJSON.Valid && cfgJSON.String != "" {
+		_ = json.Unmarshal([]byte(cfgJSON.String), &ep.Config)
+	}
+	if schedCfgJSON.Valid && schedCfgJSON.String != "" {
+		ep.ScheduleConfig = &types.ScheduleEndpointConfig{}
+		_ = json.Unmarshal([]byte(schedCfgJSON.String), ep.ScheduleConfig)
+	}
+	return &ep, nil
+}
+
+func scanEndpointRow(rows *sql.Rows) (*types.WorkflowEndpoint, error) {
+	var ep types.WorkflowEndpoint
+	var cfgJSON, schedCfgJSON sql.NullString
+
+	err := rows.Scan(
+		&ep.ID, &ep.Name, &ep.Type, &ep.WorkflowID,
+		&cfgJSON, &schedCfgJSON, &ep.Path, &ep.CreatedBy,
+		&ep.Disabled, &ep.CreatedAt, &ep.UpdatedAt,
+	)
+	if err != nil {
+		return nil, wrapDBErr(err, "scanEndpointRow")
+	}
+	if cfgJSON.Valid && cfgJSON.String != "" {
+		_ = json.Unmarshal([]byte(cfgJSON.String), &ep.Config)
+	}
+	if schedCfgJSON.Valid && schedCfgJSON.String != "" {
+		ep.ScheduleConfig = &types.ScheduleEndpointConfig{}
+		_ = json.Unmarshal([]byte(schedCfgJSON.String), ep.ScheduleConfig)
+	}
+	return &ep, nil
+}

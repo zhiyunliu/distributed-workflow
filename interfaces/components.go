@@ -150,3 +150,30 @@ type FailoverManager interface {
 	// FailoverWorker 执行 Worker 故障转移
 	FailoverWorker(workerID string) error
 }
+
+// AuditLogManager 审计日志管理器接口（D3新增）
+// 异步写入，按批次 flush 到数据库
+type AuditLogManager interface {
+	// RecordLog 异步记录单条审计日志
+	RecordLog(log *types.WorkflowAuditLog) error
+	// BatchRecordLog 异步批量记录审计日志
+	BatchRecordLog(logs []*types.WorkflowAuditLog) error
+	// QueryLogs 分页查询审计日志
+	QueryLogs(filter types.AuditLogFilter, page, pageSize int) ([]*types.WorkflowAuditLog, int64, error)
+	// GetLogByID 获取单条审计日志
+	GetLogByID(logID string) (*types.WorkflowAuditLog, error)
+	// ArchiveLogs 归档指定时间之前的审计日志
+	ArchiveLogs(beforeTime time.Time) error
+	// Start 启动异步写入协程
+	Start()
+	// Stop 停止并 flush 剩余日志
+	Stop()
+}
+
+// CallbackManager 节点回调管理器接口（D3新增）
+type CallbackManager interface {
+	// InvokeCallback 调用节点生命周期回调地址
+	InvokeCallback(url string, data map[string]interface{}, config *types.NodeCallbackConfig) error
+	// InvokeWebhook 调用 Webhook 通知
+	InvokeWebhook(url string, event string, data map[string]interface{}) error
+}

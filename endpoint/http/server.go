@@ -13,9 +13,12 @@ import (
 
 // Server HTTP API 服务器
 type Server struct {
-	svc    interfaces.WorkflowService
-	engine *gin.Engine
-	server *http.Server
+	svc         interfaces.WorkflowService
+	approvalSvc interfaces.ApprovalService
+	auditSvc    interfaces.AuditLogService
+	endpointSvc interfaces.EndpointManagerService
+	engine      *gin.Engine
+	server      *http.Server
 }
 
 // NewServer 创建 HTTP 服务器
