@@ -1,0 +1,144 @@
+syntax = "proto3";
+
+package distributedworkflow;
+option go_package = "./proto;proto";
+
+// EngineService 引擎服务，由 Worker 调用 Engine
+service EngineService {
+  // RegisterWorker 注册 Worker 节点
+  rpc RegisterWorker(RegisterWorkerRequest) returns (RegisterWorkerResponse);
+  // UnregisterWorker 注销 Worker 节点
+  rpc UnregisterWorker(UnregisterWorkerRequest) returns (UnregisterWorkerResponse);
+  // Heartbeat Worker 心跳上报
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  // ReportTaskResult 上报任务执行结果
+  rpc ReportTaskResult(ReportTaskResultRequest) returns (ReportTaskResultResponse);
+  // ReportError 上报任务执行错误
+  rpc ReportError(ReportErrorRequest) returns (ReportErrorResponse);
+}
+
+// NodeWorkerService Worker 服务，由 Engine 调用 Worker
+service NodeWorkerService {
+  // AssignTask 向 Worker 分配任务
+  rpc AssignTask(AssignTaskRequest) returns (AssignTaskResponse);
+  // CancelTask 取消 Worker 上正在执行的任务
+  rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EngineService 请求/响应消息
+// ─────────────────────────────────────────────────────────────────────────────
+
+// RegisterWorkerRequest 注册 Worker 请求
+message RegisterWorkerRequest {
+  string worker_id = 1;                 // Worker 唯一 ID
+  string address = 2;                   // Worker gRPC 服务地址，格式：ip:port
+  string worker_ip = 3;                 // Worker 服务器 IP 地址
+  map<string, int32> capabilities = 4;  // 支持的节点类型与最大并发数，key=节点类型，value=最大并发数
+}
+
+// RegisterWorkerResponse 注册 Worker 响应
+message RegisterWorkerResponse {
+  int32 code = 1;     // 响应码，0=成功
+  string message = 2; // 响应信息
+  bool success = 3;   // 是否成功
+}
+
+// UnregisterWorkerRequest 注销 Worker 请求
+message UnregisterWorkerRequest {
+  string worker_id = 1; // Worker 唯一 ID
+}
+
+// UnregisterWorkerResponse 注销 Worker 响应
+message UnregisterWorkerResponse {
+  int32 code = 1;
+  string message = 2;
+  bool success = 3;
+}
+
+// HeartbeatRequest 心跳请求
+message HeartbeatRequest {
+  string worker_id = 1;                // Worker 唯一 ID
+  map<string, int32> current_load = 2; // 当前负载，key=节点类型，value=当前执行数
+}
+
+// HeartbeatResponse 心跳响应
+message HeartbeatResponse {
+  int32 code = 1;
+  string message = 2;
+  bool success = 3;
+}
+
+// ReportTaskResultRequest 上报任务结果请求
+message ReportTaskResultRequest {
+  string task_id = 1;              // 任务 ID
+  string workflow_instance_id = 2; // 流程实例 ID
+  string workflow_node_id = 3;     // 节点 ID
+  bool success = 4;                // 是否执行成功
+  bytes output_data = 5;           // 执行输出数据（JSON 序列化）
+  string error_message = 6;        // 错误信息
+  int64 start_time = 7;            // 执行开始时间（Unix 毫秒）
+  int64 end_time = 8;              // 执行结束时间（Unix 毫秒）
+}
+
+// ReportTaskResultResponse 上报任务结果响应
+message ReportTaskResultResponse {
+  int32 code = 1;
+  string message = 2;
+  bool success = 3;
+}
+
+// ReportErrorRequest 上报错误请求
+message ReportErrorRequest {
+  string worker_id = 1;            // Worker ID
+  string worker_ip = 2;            // Worker IP 地址
+  string workflow_instance_id = 3; // 流程实例 ID
+  string workflow_node_id = 4;     // 节点 ID
+  string error_message = 5;        // 错误信息
+  string stack_trace = 6;          // 错误堆栈
+  int64 occur_time = 7;            // 发生时间（Unix 毫秒）
+}
+
+// ReportErrorResponse 上报错误响应
+message ReportErrorResponse {
+  int32 code = 1;
+  string message = 2;
+  bool success = 3;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NodeWorkerService 请求/响应消息
+// ─────────────────────────────────────────────────────────────────────────────
+
+// AssignTaskRequest 分配任务请求
+message AssignTaskRequest {
+  string task_id = 1;              // 任务唯一 ID，格式：instanceId-nodeId
+  string workflow_instance_id = 2; // 流程实例 ID
+  string workflow_node_id = 3;     // 节点 ID
+  string node_type = 4;            // 节点类型
+  bytes configuration = 5;         // 节点配置（JSON 序列化）
+  bytes input_data = 6;            // 节点输入数据（JSON 序列化）
+  bytes context = 7;               // 流程上下文（JSON 序列化）
+  int32 timeout = 8;               // 执行超时时间，单位秒，0 表示不限制
+}
+
+// AssignTaskResponse 分配任务响应
+message AssignTaskResponse {
+  int32 code = 1;
+  string message = 2;
+  bool success = 3;
+}
+
+// CancelTaskRequest 取消任务请求
+message CancelTaskRequest {
+  string workflow_instance_id = 1; // 流程实例 ID
+  string workflow_node_id = 2;     // 节点 ID
+  string reason = 3;               // 取消原因
+}
+
+// CancelTaskResponse 取消任务响应
+message CancelTaskResponse {
+  int32 code = 1;
+  string message = 2;
+  bool success = 3;
+}

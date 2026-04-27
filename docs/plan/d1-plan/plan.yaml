@@ -1,0 +1,1181 @@
+plan_id: d1-plan
+objective: |
+  实现 DistributedWorkflow 分布式工作流引擎 D1 阶段核心基础架构，
+  完成「流程定义→实例创建→DAG调度→分布式执行→状态持久化」全链路闭环，
+  交付最小可用、可分布式部署、可扩展的工作流引擎核心。
+created_at: "2026-04-27T00:00:00+08:00"
+created_by: gem-planner
+status: pending
+research_confidence: high
+
+plan_metrics:
+  wave_1_task_count: 3
+  total_dependencies: 22
+  risk_score: medium
+
+tldr: |
+  D1 阶段分 6 个 Wave 顺序推进，Wave 1 并行完成脚手架、核心类型和 Proto 定义；
+  Wave 2 在类型基础上并行完成接口层、DAG 解析器和 gRPC 生成代码；
+  Wave 3 并行实现四个基础设施适配层（SQL Server / Redis 队列 / Redis 锁 / Nacos）；
+  Wave 4 并行实现 Engine 五大服务和 NodeWorker 主体；
+  Wave 5 完成 HTTP 端点和三个可运行示例；
+  Wave 6 完成 Go Doc 与接入指南文档。
+  全程遵循接口抽象原则，禁止直接硬编码基础设施依赖。
+
+open_questions:
+  - glue 框架版本及其 DI / 配置加载的具体 API，需查阅 github.com/zhiyunliu/glue 文档
+  - Nacos Go SDK 版本（nacos-sdk-go v2 还是 v1）确认
+  - go-redis 版本（v8 or v9），D1.md 中明确为 v9
+  - SQL Server 驱动：microsoft/go-mssqldb 还是 denisenkom/go-mssqldb
+  - HTTP 框架：D1.md 中写 Gin，需确认项目是否通过 glue 封装 HTTP 路由
+
+pre_mortem:
+  overall_risk_level: medium
+  critical_failure_modes:
+    - scenario: gRPC 生成代码依赖 protoc 工具链，CI 环境未安装则生成失败
+      likelihood: medium
+      impact: high
+      mitigation: 将生成的 pb.go 文件直接提交到仓库，同时在 Makefile 提供 generate 目标；实现者在本地运行生成后提交
+    - scenario: SQL Server 在开发环境不可用，存储层单元测试无法执行
+      likelihood: medium
+      impact: medium
+      mitigation: storage/sqlserver 层提供基于接口的 Mock 实现；集成测试使用 testcontainers 或跳过标签
+    - scenario: Engine 五大服务同属一个大任务，实现者单次 session 内代码量超出上限
+      likelihood: high
+      impact: medium
+      mitigation: Engine 任务按服务边界垂直拆分为 T-11a/T-11b 两个子任务，各自覆盖不超过 3 个文件
+    - scenario: Nacos SDK 与 glue 框架集成方式不明确，导致注册发现逻辑反复返工
+      likelihood: medium
+      impact: medium
+      mitigation: 在 T-10-registry-nacos 前先阅读 glue 框架 registry 扩展点文档，确认集成模式后再实现
+  assumptions:
+    - Go 1.22+ 已安装，开发环境已配置 GOPATH/GOMODULE
+    - protoc + protoc-gen-go + protoc-gen-go-grpc 已安装（或 CI 中可用）
+    - Redis 6+ 和 SQL Server 2019+ 在本地或测试环境可访问
+    - Nacos 2.x 服务在测试环境可访问
+    - 使用 go-redis v9、nacos-sdk-go v2、microsoft/go-mssqldb 驱动
+    - HTTP 框架使用 github.com/gin-gonic/gin，不通过 glue 路由封装（D1 阶段）
+    - zerolog 用于所有日志输出，日志级别通过配置文件控制
+
+implementation_specification:
+  code_structure: |
+    项目根目录采用平铺式 Go module 结构：
+    distributed-workflow/
+    ├── go.mod / go.sum
+    ├── types/          # 核心枚举与业务结构体，零外部依赖
+    ├── interfaces/     # 所有服务接口定义，仅依赖 types/
+    ├── proto/          # .proto 文件 + 生成的 pb.go / grpc.pb.go
+    ├── rpc/            # gRPC 客户端封装（EngineClient / WorkerClient）
+    ├── dag/            # DAG 解析器与依赖检查算法
+    ├── storage/
+    │   └── sqlserver/  # WorkflowRepository SQL Server 实现
+    ├── queue/
+    │   └── redis/      # TaskQueueManager Redis 实现
+    ├── lock/
+    │   └── redis/      # DistributedLock Redis 实现
+    ├── registry/
+    │   └── nacos/      # Nacos 服务注册发现
+    ├── engine/         # Engine 五大服务实现
+    ├── worker/         # NodeWorker 主体
+    ├── endpoint/
+    │   └── http/       # HTTP 触发端点
+    └── examples/
+        ├── serial/
+        ├── branch/
+        └── parallel/
+  affected_areas:
+    - types/ — 新建，核心数据结构
+    - interfaces/ — 新建，服务接口抽象
+    - proto/ — 新建，gRPC 协议定义
+    - rpc/ — 新建，gRPC 客户端/服务端桩代码封装
+    - dag/ — 新建，DAG 算法
+    - storage/sqlserver/ — 新建，持久化实现
+    - queue/redis/ — 新建，任务队列
+    - lock/redis/ — 新建，分布式锁
+    - registry/nacos/ — 新建，服务注册发现
+    - engine/ — 新建，调度引擎核心
+    - worker/ — 新建，分布式执行节点
+    - endpoint/http/ — 新建，HTTP 触发入口
+    - examples/ — 新建，集成示例
+  component_details:
+    - component: types
+      responsibility: 定义所有核心枚举（WorkflowStatus/NodeStatus/ConnectionType/DependencyMode）和业务结构体（WorkflowDef/WorkflowNode/Connection/WorkflowInstance/WorkflowNodeState/WorkflowContext/NodeWorkerInfo/Task/TaskResult）
+      interfaces:
+        - 纯数据结构，无方法，供其他所有包引用
+    - component: interfaces
+      responsibility: 声明 WorkflowService / SchedulerService / InstanceStateService / WorkerManagerService / HTTPEndpointService / NodeExecutor / NodeExecutorContainer / TaskExecutionManager / WorkflowRepository / RedisRepository / DistributedLock / TaskQueueManager / ContextManager / WorkflowLoader / ErrorHandler 接口
+      interfaces:
+        - 全部为 Go interface，无实现代码
+    - component: proto + rpc
+      responsibility: 定义 EngineService 和 NodeWorkerService 的 Protobuf 协议，生成 Go 代码，封装 gRPC 客户端（EngineClient/WorkerClient）连接管理与超时控制
+      interfaces:
+        - EngineServiceClient / EngineServiceServer
+        - NodeWorkerServiceClient / NodeWorkerServiceServer
+    - component: dag
+      responsibility: WorkflowDef 到邻接表的转换、DFS 循环依赖检测、前置节点依赖满足检查（All/Any 模式）、可执行节点集合计算
+      interfaces:
+        - DAGParser.Parse(def) → DAGGraph
+        - DAGGraph.HasCycle() bool
+        - DAGGraph.GetReadyNodes(states) []string
+    - component: storage/sqlserver
+      responsibility: 实现 WorkflowRepository 接口，包含 4 张表的 CRUD、索引创建 DDL、连接池管理、预编译语句、事务控制
+      interfaces:
+        - NewSQLServerRepository(dsn string) (WorkflowRepository, error)
+    - component: queue/redis
+      responsibility: 实现 TaskQueueManager 接口，基于 Redis List（LPUSH/BRPOP）实现分布式任务队列
+      interfaces:
+        - NewRedisTaskQueue(client RedisRepository) TaskQueueManager
+    - component: lock/redis
+      responsibility: 实现 DistributedLock 接口，基于 Redis SETNX + Lua 脚本 + WatchDog 自动续期
+      interfaces:
+        - NewRedisLock(client RedisRepository, key, value string) DistributedLock
+    - component: registry/nacos
+      responsibility: 封装 Nacos SDK，实现 Worker 注册/注销/心跳/服务发现，向 WorkerManagerService 推送 Worker 上下线事件
+      interfaces:
+        - NacosRegistry.Register(info NodeWorkerInfo) error
+        - NacosRegistry.Deregister(workerID string) error
+        - NacosRegistry.Subscribe(handler WorkerEventHandler) error
+    - component: engine
+      responsibility: 实现 WorkflowService / SchedulerService / InstanceStateService / WorkerManagerService / HTTPEndpointService 五大服务，组合所有基础设施组件完成完整调度链路
+      interfaces:
+        - Engine.Start() error / Engine.Stop() error
+    - component: worker
+      responsibility: 实现 NodeWorker 主体，含 gRPC 服务端、NodeExecutorContainer、TaskExecutionManager、心跳模块、错误上报模块，内置 log/http/sleep 三种执行器
+      interfaces:
+        - NodeWorker.Start() error / NodeWorker.Stop() error
+        - NodeWorker.Register(executor NodeExecutor) error
+    - component: endpoint/http
+      responsibility: 实现 HTTPEndpointService，基于 Gin 提供 POST /api/v1/workflow/{workflowID}/start 接口
+      interfaces:
+        - HTTPEndpoint.Start(addr string) error
+        - HTTPEndpoint.RegisterWorkflowEndpoint(workflowID, path string) error
+    - component: examples
+      responsibility: 提供 3 个可直接运行的完整示例，覆盖串行、分支、并行三种 DAG 模式，演示自定义执行器注册与使用
+      interfaces:
+        - main() 入口，可通过 go run 直接运行
+  dependencies:
+    - component: interfaces
+      relationship: 依赖 types（接口方法签名使用 types 中的结构体）
+    - component: dag
+      relationship: 依赖 types（接受 WorkflowDef 作为输入）
+    - component: storage/sqlserver
+      relationship: 依赖 interfaces（实现 WorkflowRepository）、依赖 types
+    - component: queue/redis
+      relationship: 依赖 interfaces（实现 TaskQueueManager、使用 RedisRepository）、依赖 types
+    - component: lock/redis
+      relationship: 依赖 interfaces（实现 DistributedLock、使用 RedisRepository）
+    - component: rpc
+      relationship: 依赖 proto 生成代码
+    - component: engine
+      relationship: 依赖 interfaces / dag / rpc / storage / queue / lock / registry
+    - component: worker
+      relationship: 依赖 interfaces / rpc / registry / types
+    - component: endpoint/http
+      relationship: 依赖 engine（调用 WorkflowService.StartWorkflow）
+    - component: examples
+      relationship: 依赖 engine / worker / endpoint/http
+  integration_points:
+    - Engine 通过 gRPC（rpc/）调用 NodeWorker 的 AssignTask / CancelTask
+    - NodeWorker 通过 gRPC（rpc/）调用 Engine 的 ReportTaskResult / ReportError / Heartbeat
+    - Engine 和 NodeWorker 通过 Nacos（registry/nacos/）完成服务注册与发现
+    - Engine 的 SchedulerService 通过 queue/redis/ 入队/出队待执行任务
+    - Engine 通过 lock/redis/ 保证集群部署时调度操作的互斥性
+    - Engine 和 NodeWorker 的所有状态通过 storage/sqlserver/ 持久化
+
+contracts:
+  - from_task: T-01-scaffold
+    to_task: T-02-types
+    interface: go.mod 模块名 (github.com/zhiyunliu/distributed-workflow) 确认，供所有包 import 使用
+    format: go.mod 文件内容
+  - from_task: T-02-types
+    to_task: T-04-interfaces
+    interface: types 包中所有公开结构体与枚举，接口方法签名依赖这些类型
+    format: Go struct/type 定义
+  - from_task: T-02-types
+    to_task: T-05-dag
+    interface: WorkflowDef / WorkflowNode / Connection / DependencyMode / WorkflowNodeStatus 类型
+    format: Go struct/type 定义
+  - from_task: T-03-proto
+    to_task: T-06-rpc
+    interface: .proto 文件及生成的 pb.go / grpc.pb.go
+    format: Protobuf + Go 生成代码
+  - from_task: T-04-interfaces
+    to_task: T-07-storage-sqlserver
+    interface: WorkflowRepository / RedisRepository 接口定义
+    format: Go interface
+  - from_task: T-04-interfaces
+    to_task: T-08-queue-redis
+    interface: TaskQueueManager / RedisRepository 接口定义
+    format: Go interface
+  - from_task: T-04-interfaces
+    to_task: T-09-lock-redis
+    interface: DistributedLock / RedisRepository 接口定义
+    format: Go interface
+  - from_task: T-04-interfaces
+    to_task: T-10-registry-nacos
+    interface: WorkerManagerService 事件回调 / NodeWorkerInfo 类型
+    format: Go interface + struct
+  - from_task: T-06-rpc
+    to_task: T-10-registry-nacos
+    interface: EngineServiceClient / NodeWorkerServiceClient gRPC 客户端封装
+    format: Go struct
+  - from_task: T-05-dag
+    to_task: T-11a-engine-core
+    interface: DAGParser / DAGGraph，供 SchedulerService 使用
+    format: Go struct + methods
+  - from_task: T-07-storage-sqlserver
+    to_task: T-11a-engine-core
+    interface: WorkflowRepository 接口实现实例
+    format: Go struct (dependency injection)
+  - from_task: T-08-queue-redis
+    to_task: T-11a-engine-core
+    interface: TaskQueueManager 接口实现实例
+    format: Go struct (dependency injection)
+  - from_task: T-09-lock-redis
+    to_task: T-11a-engine-core
+    interface: DistributedLock 接口实现实例
+    format: Go struct (dependency injection)
+  - from_task: T-10-registry-nacos
+    to_task: T-11a-engine-core
+    interface: NacosRegistry，供 WorkerManagerService 订阅 Worker 事件
+    format: Go struct
+  - from_task: T-06-rpc
+    to_task: T-11b-engine-services
+    interface: WorkerClient gRPC 客户端，供 WorkerManagerService.AssignTask 调用
+    format: Go struct
+  - from_task: T-11a-engine-core
+    to_task: T-11b-engine-services
+    interface: WorkflowService / SchedulerService / InstanceStateService 的接口实现，供 WorkerManagerService 和 HTTPEndpointService 依赖注入
+    format: Go struct
+  - from_task: T-10-registry-nacos
+    to_task: T-12-worker
+    interface: NacosRegistry，供 NodeWorker 完成服务注册/注销/心跳
+    format: Go struct
+  - from_task: T-06-rpc
+    to_task: T-12-worker
+    interface: NodeWorkerServiceServer / EngineServiceClient，Worker 实现 gRPC 服务端并回调 Engine
+    format: Go interface + struct
+  - from_task: T-11b-engine-services
+    to_task: T-13-endpoint-http
+    interface: WorkflowService.StartWorkflow / GetWorkflowInstance 方法
+    format: Go interface method
+  - from_task: T-11b-engine-services
+    to_task: T-14-examples
+    interface: Engine 完整可用（Start/Stop）
+    format: Go struct
+  - from_task: T-12-worker
+    to_task: T-14-examples
+    interface: NodeWorker 完整可用（Start/Stop/Register）
+    format: Go struct
+  - from_task: T-13-endpoint-http
+    to_task: T-14-examples
+    interface: HTTP 端点可用，示例通过 HTTP POST 触发流程
+    format: HTTP API
+
+tasks:
+  # ─────────────────── Wave 1：脚手架、类型、Proto ───────────────────
+  - id: T-01-scaffold
+    title: 搭建 go.mod 与项目目录结构
+    description: |
+      初始化 Go module，创建项目标准目录树：
+      types/ interfaces/ proto/ rpc/ dag/ storage/sqlserver/
+      queue/redis/ lock/redis/ registry/nacos/
+      engine/ worker/ endpoint/http/ examples/serial/ examples/branch/ examples/parallel/
+      在根目录创建 Makefile（含 generate/build/test/lint 目标）。
+      go.mod 声明所有直接依赖：
+        google.golang.org/grpc、google.golang.org/protobuf、
+        github.com/redis/go-redis/v9、github.com/nacos-group/nacos-sdk-go/v2、
+        github.com/microsoft/go-mssqldb、github.com/gin-gonic/gin、
+        github.com/rs/zerolog、github.com/google/uuid、
+        github.com/zhiyunliu/glue。
+      创建各包 doc.go（仅包注释），确保 go build ./... 通过。
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: docs/D1.md
+        description: D1 阶段设计文档，包含技术栈与目录规范
+      - path: AGENTS.md
+        description: 项目开发规范
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: 初始规划
+        timestamp: "2026-04-27T00:00:00+08:00"
+        estimated_effort: small
+        estimated_files: 3
+        estimated_lines: 80
+        focus_area: 项目初始化
+        verification:
+          - go mod tidy 无报错
+          - go build ./... 通过
+          - 所有一级子目录存在且包含 doc.go
+        acceptance_criteria:
+          - go.mod 模块名为 github.com/zhiyunliu/distributed-workflow
+          - 所有必需依赖已声明
+          - Makefile 包含 generate/build/test/lint 四个目标
+        failure_modes:
+          - scenario: 依赖版本冲突导致 go mod tidy 失败
+            likelihood: low
+            impact: medium
+            mitigation: 逐个添加依赖，确认版本兼容性
+        tech_stack:
+          - Go 1.22+
+        test_coverage: null
+
+  - id: T-02-types
+    title: 实现 types/ 核心数据结构
+    description: |
+      在 types/ 包中实现所有核心枚举与业务结构体，零外部依赖（仅用标准库）：
+      枚举：WorkflowStatus / WorkflowNodeStatus / ConnectionType / DependencyMode
+      结构体：WorkflowDef / WorkflowNode / Connection / WorkflowInstance /
+              WorkflowNodeState / WorkflowContext / NodeWorkerInfo / Task / TaskResult
+      所有结构体字段必须带 json tag，关键字段附 validate tag。
+      提供常量字符串值，与 D1.md §4.1 完全一致。
+      Task 结构包含：TaskID、InstanceID、NodeID、NodeType、Config、InputData、Timeout。
+      TaskResult 包含：TaskID、InstanceID、NodeID、Success、OutputData、ErrorMessage、StartTime、EndTime。
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: docs/D1.md
+        description: §4 核心数据结构详细设计
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: 初始规划
+        timestamp: "2026-04-27T00:00:00+08:00"
+        estimated_effort: small
+        estimated_files: 2
+        estimated_lines: 200
+        focus_area: 核心类型定义
+        verification:
+          - go vet ./types/... 无报错
+          - 所有枚举值与 D1.md §4.1 完全一致
+          - 所有结构体字段含 json tag
+        acceptance_criteria:
+          - 包含 D1.md 中描述的全部 9 个结构体
+          - 包含全部 4 个枚举类型
+          - Task / TaskResult 结构完整
+        failure_modes:
+          - scenario: 字段类型与后续接口签名不匹配导致编译错误
+            likelihood: low
+            impact: medium
+            mitigation: 接口任务（T-04）依赖本任务，先完成类型后再实现接口
+        tech_stack:
+          - Go 1.22+
+        test_coverage: null
+
+  - id: T-03-proto
+    title: 编写 proto/ gRPC Proto 定义文件
+    description: |
+      在 proto/ 目录创建 workflow.proto，完整实现 D1.md §7.2 的所有 Proto 定义：
+      服务：EngineService（RegisterWorker/UnregisterWorker/Heartbeat/ReportTaskResult/ReportError）
+            NodeWorkerService（AssignTask/CancelTask）
+      消息：RegisterWorkerRequest/Response、UnregisterWorkerRequest/Response、
+            HeartbeatRequest/Response、AssignTaskRequest/Response、
+            CancelTaskRequest/Response、ReportTaskResultRequest/Response、
+            ReportErrorRequest/Response
+      option go_package = "github.com/zhiyunliu/distributed-workflow/proto;proto"
+      执行 protoc 生成 workflow.pb.go 和 workflow_grpc.pb.go，提交生成文件。
+      在 Makefile generate 目标中添加 protoc 命令。
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: docs/D1.md
+        description: §7 gRPC 协议详细设计，含完整 proto 定义
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: 初始规划
+        timestamp: "2026-04-27T00:00:00+08:00"
+        estimated_effort: small
+        estimated_files: 3
+        estimated_lines: 150
+        focus_area: gRPC 协议层
+        verification:
+          - protoc 执行无报错
+          - 生成的 .pb.go 文件存在
+          - go build ./proto/... 通过
+        acceptance_criteria:
+          - workflow.proto 包含 2 个 service、13+ 个 message
+          - 生成代码已提交，无需 CI 运行 protoc
+          - go_package 选项正确
+        failure_modes:
+          - scenario: protoc 工具链未安装，生成步骤失败
+            likelihood: medium
+            impact: high
+            mitigation: 将生成的 pb.go 文件直接提交仓库；Makefile 仅作为再生成入口
+        tech_stack:
+          - Protobuf 3
+          - protoc-gen-go
+          - protoc-gen-go-grpc
+        test_coverage: null
+
+  # ─────────────────── Wave 2：接口层、DAG、gRPC 封装 ───────────────────
+  - id: T-04-interfaces
+    title: 定义 interfaces/ 核心服务接口
+    description: |
+      在 interfaces/ 包中声明 D1.md §5 中描述的所有服务接口，仅依赖 types/ 包：
+      - WorkflowService（CreateWorkflow/GetWorkflow/UpdateWorkflow/DeleteWorkflow/StartWorkflow/GetWorkflowInstance）
+      - SchedulerService（StartExecution/ScheduleNextNodes/HandleNodeCompleted/RecoverUnfinishedInstances）
+      - InstanceStateService（CreateInstance/UpdateInstanceStatus/CreateNodeState/UpdateNodeState/GetNodeState/GetInstanceNodeStates/ReportTaskResult）
+      - WorkerManagerService（GetOnlineWorkers/GetWorkersByNodeType/SelectBestWorker/AssignTask/HandleWorkerOffline/UpdateWorkerLoad）
+      - HTTPEndpointService（Start/Stop/RegisterWorkflowEndpoint）
+      - NodeExecutor（Type/Execute）
+      - NodeExecutorContainer（Register/Get/List）
+      - TaskExecutionManager（Submit/Cancel/GetCurrentLoad）
+      - WorkflowRepository（完整 CRUD，见 D1.md §5.4.1）
+      - RedisRepository（Lock/Unlock/RenewLock/EnqueueTask/DequeueTask/GetQueueLength/SetCache/GetCache/DeleteCache）
+      - DistributedLock（Lock/Unlock/TryLockWithTimeout）
+      - TaskQueueManager（Enqueue/Dequeue/Remove/Len）
+      - ContextManager（CreateContext/GetContext/UpdateContext/DeleteContext）
+      - WorkflowLoader（Load/List）
+      - ErrorHandler（HandleError）
+      每个接口单独一个文件，文件名与接口名对应（snake_case）。
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies:
+      - T-01-scaffold
+      - T-02-types
+    conflicts_with: []
+    context_files:
+      - path: docs/D1.md
+        description: §5 核心组件详细设计，所有接口定义
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: 初始规划
+        timestamp: "2026-04-27T00:00:00+08:00"
+        estimated_effort: small
+        estimated_files: 3
+        estimated_lines: 280
+        focus_area: 接口抽象层
+        verification:
+          - go build ./interfaces/... 通过
+          - 接口方法签名与 D1.md 完全一致
+          - 无任何实现代码，仅 interface 声明
+        acceptance_criteria:
+          - 包含 D1.md 中描述的全部 15 个接口
+          - 每个接口独立文件
+          - 所有方法返回值均正确处理 error
+        failure_modes:
+          - scenario: 接口签名与 types 字段不一致导致后续实现编译失败
+            likelihood: medium
+            impact: medium
+            mitigation: 接口定义后立即运行 go build，确保类型引用正确
+        tech_stack:
+          - Go 1.22+
+        test_coverage: null
+
+  - id: T-05-dag
+    title: 实现 dag/ DAG 解析器与依赖检查算法
+    description: |
+      在 dag/ 包实现 DAG 核心算法，仅依赖 types/ 包：
+      1. DAGParser：将 WorkflowDef 解析为 DAGGraph（邻接表 + 反向邻接表）
+      2. DAGGraph.HasCycle()：基于 DFS（三色标记）检测循环依赖，与 D1.md §10.1 代码一致
+      3. DAGGraph.GetPredecessors(nodeID)：返回所有前置节点 ID
+      4. DAGGraph.GetSuccessors(nodeID)：返回所有后继节点 ID
+      5. DAGGraph.GetReadyNodes(states map[string]WorkflowNodeState, connections []*Connection)：
+         基于 All/Any 依赖模式检查，返回当前满足依赖条件的可执行节点 ID 列表
+      提供完整单元测试，覆盖：串行链路、分支场景、并行聚合、循环检测（阳性/阴性）、All/Any 依赖模式。
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies:
+      - T-01-scaffold
+      - T-02-types
+    conflicts_with: []
+    context_files:
+      - path: docs/D1.md
+        description: §10.1 DAG 循环依赖检测算法代码
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: 初始规划
+        timestamp: "2026-04-27T00:00:00+08:00"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 220
+        focus_area: DAG 算法
+        verification:
+          - go test ./dag/... -v 全部通过
+          - 串行/分支/并行/循环场景覆盖率 ≥ 80%
+        acceptance_criteria:
+          - HasCycle 对有环 DAG 返回 true，无环返回 false
+          - GetReadyNodes 正确实现 All 和 Any 两种模式
+          - 单元测试覆盖 4 种 DAG 拓扑结构
+        failure_modes:
+          - scenario: All/Any 依赖检查逻辑错误导致节点被错误调度
+            likelihood: medium
+            impact: high
+            mitigation: 编写专项单元测试，覆盖边界条件（前置节点部分失败等）
+        tech_stack:
+          - Go 1.22+
+        test_coverage: "≥ 80%"
+
+  - id: T-06-rpc
+    title: 实现 rpc/ gRPC 客户端封装
+    description: |
+      在 rpc/ 包基于 proto/ 生成代码封装：
+      1. EngineClient：封装 EngineServiceClient，管理 gRPC 连接（含连接池/重用），
+         提供 RegisterWorker/UnregisterWorker/Heartbeat/ReportTaskResult/ReportError 方法，
+         默认超时 5 秒（心跳 3 秒）。
+      2. WorkerClient：封装 NodeWorkerServiceClient，提供 AssignTask/CancelTask 方法，
+         支持按 address(ip:port) 动态创建连接，带超时 5 秒。
+      3. EngineServer：提供 NodeWorkerService gRPC 服务端注册辅助函数。
+      4. WorkerServer：提供 EngineService gRPC 服务端注册辅助函数。
+      所有方法封装 zerolog 请求日志（入参/出参/耗时），panic recovery 中间件。
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies:
+      - T-01-scaffold
+      - T-03-proto
+    conflicts_with: []
+    context_files:
+      - path: docs/D1.md
+        description: §7 gRPC 协议与错误码设计
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: 初始规划
+        timestamp: "2026-04-27T00:00:00+08:00"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 250
+        focus_area: gRPC 客户端层
+        verification:
+          - go build ./rpc/... 通过
+          - EngineClient / WorkerClient 可被实例化
+        acceptance_criteria:
+          - EngineClient 封装全部 5 个 EngineService 方法
+          - WorkerClient 封装 AssignTask / CancelTask
+          - 所有方法带默认超时与请求日志
+        failure_modes:
+          - scenario: gRPC 连接管理不当导致连接泄漏
+            likelihood: medium
+            impact: medium
+            mitigation: 使用单例连接 + 延迟 Close，提供 Close() 方法
+        tech_stack:
+          - google.golang.org/grpc
+          - google.golang.org/protobuf
+          - github.com/rs/zerolog
+        test_coverage: null
+
+  # ─────────────────── Wave 3：基础设施适配层（4 个并行） ───────────────────
+  - id: T-07-storage-sqlserver
+    title: 实现 storage/sqlserver/ SQL Server 持久化层
+    description: |
+      在 storage/sqlserver/ 包实现 WorkflowRepository 接口：
+      1. 提供 DDL 脚本（storage/sqlserver/schema.sql）：
+         创建 workflow_defs / workflow_instances / workflow_node_states /
+         workflow_instance_context 四张表及 D1.md §6.2 所有索引。
+      2. SQLServerRepository 结构体，使用 microsoft/go-mssqldb 驱动。
+      3. 实现全部 CRUD 方法（16 个），使用预编译语句（防 SQL 注入），
+         写操作使用数据库事务。
+      4. 连接池配置：SetMaxOpenConns(50)/SetMaxIdleConns(10)/SetConnMaxLifetime(1h)。
+      5. JSON 字段（definition/input_data/output_data/data）使用 encoding/json 序列化/反序列化。
+      6. 提供 NewSQLServerRepository(dsn string) (interfaces.WorkflowRepository, error) 工厂函数。
+      单元测试使用接口 Mock，集成测试通过构建标签 sqlserver_integration 隔离。
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies:
+      - T-04-interfaces
+      - T-02-types
+    conflicts_with: []
+    context_files:
+      - path: docs/D1.md
+        description: §5.4.1 SQL Server 存储接口、§6 数据库详细设计
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: 初始规划
+        timestamp: "2026-04-27T00:00:00+08:00"
+        estimated_effort: large
+        estimated_files: 3
+        estimated_lines: 300
+        focus_area: 数据持久化
+        verification:
+          - go build ./storage/sqlserver/... 通过
+          - schema.sql 含 4 张表 + 7 个索引
+          - 单元测试（Mock）通过
+        acceptance_criteria:
+          - 实现 WorkflowRepository 接口全部 16 个方法
+          - DDL 脚本完整，含所有表和索引
+          - 使用预编译语句，无字符串拼接 SQL
+          - 连接池参数已配置
+        failure_modes:
+          - scenario: SQL Server 环境不可用，集成测试全部失败
+            likelihood: medium
+            impact: medium
+            mitigation: 单元测试用 Mock，集成测试用构建标签隔离
+          - scenario: 事务处理不当导致数据不一致
+            likelihood: low
+            impact: high
+            mitigation: 写操作统一封装 withTx 辅助函数，确保 defer tx.Rollback
+        tech_stack:
+          - github.com/microsoft/go-mssqldb
+          - database/sql
+        test_coverage: "≥ 80%（Mock 测试）"
+
+  - id: T-08-queue-redis
+    title: 实现 queue/redis/ Redis 任务队列
+    description: |
+      在 queue/redis/ 包实现 TaskQueueManager 接口：
+      1. RedisTaskQueue 结构体，依赖 interfaces.RedisRepository。
+      2. Enqueue：LPUSH workflow:task:queue (JSON 序列化 Task)。
+      3. Dequeue：BRPOP workflow:task:queue timeout（支持可配置的阻塞超时，默认 5 秒）。
+      4. Remove：遍历队列移除匹配的任务（LRANGE + LREM）。
+      5. Len：LLEN 返回队列长度。
+      6. 同时实现 RedisRepository 接口（SetCache/GetCache/DeleteCache/EnqueueTask/DequeueTask/GetQueueLength），
+         基于 go-redis v9 客户端。
+      7. NewRedisClient(addr, password string, db int) (interfaces.RedisRepository, error) 工厂函数。
+      提供单元测试（使用 miniredis 或 Mock）。
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies:
+      - T-04-interfaces
+      - T-02-types
+    conflicts_with: []
+    context_files:
+      - path: docs/D1.md
+        description: §5.3.2 任务队列管理器、§5.4.2 Redis 存储接口、§8 Redis 设计
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: 初始规划
+        timestamp: "2026-04-27T00:00:00+08:00"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 200
+        focus_area: Redis 任务队列
+        verification:
+          - go build ./queue/redis/... 通过
+          - 单元测试通过
+        acceptance_criteria:
+          - 实现 TaskQueueManager 全部 4 个方法
+          - 实现 RedisRepository 全部 9 个方法
+          - Key 格式遵循 D1.md §8.2 规范
+        failure_modes:
+          - scenario: BRPOP 阻塞导致测试超时
+            likelihood: low
+            impact: low
+            mitigation: 测试中设置 1 秒超时，使用 miniredis 避免真实阻塞
+        tech_stack:
+          - github.com/redis/go-redis/v9
+        test_coverage: "≥ 80%"
+
+  - id: T-09-lock-redis
+    title: 实现 lock/redis/ Redis 分布式锁
+    description: |
+      在 lock/redis/ 包实现 DistributedLock 接口：
+      1. RedisLock 结构体（key/value/ttl/client/renewCtx/renewCancel），依赖 interfaces.RedisRepository。
+      2. Lock()：SET key value NX PX ttl（原子加锁）。
+      3. Unlock()：Lua 脚本校验 value 后 DEL（原子释放），防止误释放。
+      4. TryLockWithTimeout(timeout)：轮询加锁，每 100ms 重试，直到超时。
+      5. WatchDog（自动续期）：Lock 成功后启动 goroutine，每 10 秒检测锁存在则续期至 30 秒。
+         Unlock 或 Context 取消时停止续期。
+      6. NewRedisLock(repo interfaces.RedisRepository, key, value string, ttl time.Duration) interfaces.DistributedLock 工厂函数。
+      提供单元测试（使用 miniredis）覆盖：加锁成功/失败、解锁成功/误释放保护、超时等待。
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies:
+      - T-04-interfaces
+    conflicts_with: []
+    context_files:
+      - path: docs/D1.md
+        description: §5.3.1 分布式锁组件、§10.2 分布式锁完整实现
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: 初始规划
+        timestamp: "2026-04-27T00:00:00+08:00"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 200
+        focus_area: 分布式锁
+        verification:
+          - go test ./lock/redis/... -v 全部通过
+          - Lua 脚本正确实现误释放保护
+        acceptance_criteria:
+          - 实现 DistributedLock 全部 3 个方法
+          - WatchDog 自动续期正常工作
+          - 误释放保护（value 校验）通过测试
+        failure_modes:
+          - scenario: WatchDog goroutine 泄漏
+            likelihood: medium
+            impact: medium
+            mitigation: 使用 context.WithCancel 控制 WatchDog 生命周期，Unlock 时取消
+        tech_stack:
+          - github.com/redis/go-redis/v9
+        test_coverage: "≥ 80%"
+
+  - id: T-10-registry-nacos
+    title: 实现 registry/nacos/ Nacos 服务注册发现
+    description: |
+      在 registry/nacos/ 包封装 Nacos SDK v2，实现 Worker 服务注册/发现：
+      1. NacosConfig 结构（ServerAddr/Namespace/GroupName/ServiceName/ClusterName）。
+      2. NacosRegistry 结构体，封装 nacos-sdk-go v2 的 naming_client。
+      3. Register(info NodeWorkerInfo) error：注册 Worker 服务实例，
+         元数据包含 workerID/capabilities（JSON）/maxConcurrency（JSON）/workerIP。
+      4. Deregister(workerID string) error：注销指定 Worker 实例。
+      5. Heartbeat()：Nacos SDK 自动心跳（5 秒），无需手动实现。
+      6. Subscribe(handler func(workers []*NodeWorkerInfo, event string)) error：
+         订阅服务变更事件，将 Nacos 实例列表转换为 NodeWorkerInfo 列表回调 handler。
+      7. GetInstances() ([]*NodeWorkerInfo, error)：查询所有健康的 Worker 实例。
+      8. 提供 NewNacosRegistry(cfg NacosConfig) (*NacosRegistry, error) 工厂函数。
+      单元测试使用 Mock nacosClient，不依赖真实 Nacos 服务。
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies:
+      - T-04-interfaces
+      - T-06-rpc
+      - T-02-types
+    conflicts_with: []
+    context_files:
+      - path: docs/D1.md
+        description: §5.1.4 NodeWorker 管理服务、§5.2.1 Worker 注册模块、§9.1 注册与心跳流程
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: 初始规划
+        timestamp: "2026-04-27T00:00:00+08:00"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 200
+        focus_area: 服务注册发现
+        verification:
+          - go build ./registry/nacos/... 通过
+          - Mock 单元测试通过
+        acceptance_criteria:
+          - 实现 Register/Deregister/Subscribe/GetInstances 4 个核心方法
+          - 元数据正确包含 workerID/capabilities/workerIP
+          - 服务变更事件转换为 NodeWorkerInfo 正确
+        failure_modes:
+          - scenario: Nacos SDK API 与预期不符，导致注册失败
+            likelihood: medium
+            impact: high
+            mitigation: 实现前查阅 nacos-sdk-go v2 官方示例，确认 RegisterInstance API 签名
+        tech_stack:
+          - github.com/nacos-group/nacos-sdk-go/v2
+        test_coverage: "≥ 70%（Mock）"
+
+  # ─────────────────── Wave 4：Engine 核心 + NodeWorker ───────────────────
+  - id: T-11a-engine-core
+    title: 实现 engine/ WorkflowService + SchedulerService + InstanceStateService
+    description: |
+      在 engine/ 包实现前三个核心服务，依赖所有基础设施层：
+      1. WorkflowService 实现：
+         - CreateWorkflow：调用 DAGParser.HasCycle 校验，保存到 WorkflowRepository
+         - GetWorkflow/UpdateWorkflow/DeleteWorkflow：代理到 Repository
+         - StartWorkflow：创建 WorkflowInstance（UUID）、初始化 WorkflowContext、调用 SchedulerService.StartExecution
+         - GetWorkflowInstance：代理到 Repository
+      2. SchedulerService 实现：
+         - StartExecution：解析 DAG，批量创建 pending 状态节点，起始节点入队
+         - ScheduleNextNodes：基于 DAGGraph.GetReadyNodes 获取可执行节点，分布式锁保护（避免重复调度），入队
+         - HandleNodeCompleted：更新节点状态，触发 ScheduleNextNodes，检测流程是否全部完成
+         - RecoverUnfinishedInstances：查询所有 running 实例，重置 assigned/running 节点为 pending，重新入队
+      3. InstanceStateService 实现：
+         - 所有方法代理到 WorkflowRepository，附加状态机校验（禁止非法状态转换）
+         - ReportTaskResult：更新节点状态，更新上下文，触发 HandleNodeCompleted
+         - 流程完成检测：所有节点 completed/failed 后自动更新实例状态
+      使用 zerolog 记录关键操作日志（含 instance_id/node_id）。
+      提供单元测试（Mock Repository/DAG/Queue），覆盖主流程与异常场景。
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies:
+      - T-05-dag
+      - T-07-storage-sqlserver
+      - T-08-queue-redis
+      - T-09-lock-redis
+      - T-10-registry-nacos
+    conflicts_with:
+      - T-11b-engine-services
+    context_files:
+      - path: docs/D1.md
+        description: §5.1.1 WorkflowService、§5.1.2 SchedulerService、§5.1.3 InstanceStateService、§9.2 流程执行全流程
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: 初始规划，Engine 拆分为两个子任务以控制代码量
+        timestamp: "2026-04-27T00:00:00+08:00"
+        estimated_effort: large
+        estimated_files: 3
+        estimated_lines: 300
+        focus_area: 调度核心
+        verification:
+          - go build ./engine/... 通过
+          - 单元测试（Mock）通过，覆盖率 ≥ 80%
+          - 状态机校验：非法状态转换返回 error
+        acceptance_criteria:
+          - WorkflowService 实现全部 6 个接口方法
+          - SchedulerService 实现全部 4 个接口方法
+          - InstanceStateService 实现全部 7 个接口方法
+          - RecoverUnfinishedInstances 逻辑正确（§9.3 流程）
+        failure_modes:
+          - scenario: ScheduleNextNodes 被并发调用，同一节点被重复调度
+            likelihood: high
+            impact: high
+            mitigation: 使用 lock/redis/ 分布式锁保护 ScheduleNextNodes，锁粒度为 instanceID
+          - scenario: 状态机校验遗漏，导致节点状态回退
+            likelihood: medium
+            impact: medium
+            mitigation: 编写专项单元测试验证所有非法状态转换均返回 error
+        tech_stack:
+          - Go 1.22+
+          - github.com/rs/zerolog
+          - github.com/google/uuid
+        test_coverage: "≥ 80%"
+
+  - id: T-11b-engine-services
+    title: 实现 engine/ WorkerManagerService + HTTPEndpointService + Engine 主入口
+    description: |
+      在 engine/ 包实现后两个核心服务和 Engine 主结构：
+      1. WorkerManagerService 实现：
+         - 订阅 NacosRegistry 事件，维护内存 Worker 缓存（sync.Map，含 IP 地址）
+         - GetOnlineWorkers/GetWorkersByNodeType：查询缓存
+         - SelectBestWorker：加权最小负载算法（负载率 = 当前执行数 / 最大并发数），并发安全
+         - AssignTask：调用 rpc.WorkerClient.AssignTask（5 秒超时），失败自动换 Worker 重试
+         - HandleWorkerOffline：标记下线，将该 Worker 的 assigned 节点重置为 pending 重新入队
+         - UpdateWorkerLoad：更新缓存中 Worker 的负载信息
+      2. HTTPEndpointService 实现：
+         - 基于 Gin 实现，默认端口 8080
+         - 注册路由：POST /api/v1/workflow/:workflowID/start
+         - 请求体 JSON → inputData，返回 {instanceID, status}
+         - RegisterWorkflowEndpoint：注册自定义路径路由
+         - Start/Stop：Gin HTTP 服务启动/优雅关闭
+      3. Engine 主结构：
+         - Engine{WorkflowService, SchedulerService, InstanceStateService, WorkerManagerService, HTTPEndpointService}
+         - New(cfg EngineConfig) (*Engine, error)：依赖注入组装所有服务
+         - Start()：启动各服务，调用 RecoverUnfinishedInstances
+         - Stop()：优雅关闭所有服务
+      使用 zerolog 记录 Worker 上下线、任务分配关键日志。
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies:
+      - T-11a-engine-core
+      - T-06-rpc
+      - T-10-registry-nacos
+    conflicts_with:
+      - T-11a-engine-core
+    context_files:
+      - path: docs/D1.md
+        description: §5.1.4 WorkerManagerService、§5.1.5 HTTPEndpointService、§9.1 Worker 注册心跳流程
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: 初始规划，与 T-11a 串行执行（conflicts_with）
+        timestamp: "2026-04-27T00:00:00+08:00"
+        estimated_effort: large
+        estimated_files: 3
+        estimated_lines: 280
+        focus_area: Worker 管理 + HTTP 入口
+        verification:
+          - go build ./engine/... 通过
+          - Engine.Start/Stop 正常运行
+          - HTTP POST /api/v1/workflow/:id/start 返回正确 JSON
+        acceptance_criteria:
+          - WorkerManagerService 实现全部 6 个接口方法
+          - 加权最小负载算法正确，并发安全
+          - HTTP 端点注册并正常响应
+          - Engine 主结构可通过 New() 依赖注入组装
+        failure_modes:
+          - scenario: AssignTask 失败时无限重试导致调度卡死
+            likelihood: medium
+            impact: high
+            mitigation: 重试次数上限 3 次，所有 Worker 均失败则任务重新入队，等待新 Worker 上线
+        tech_stack:
+          - github.com/gin-gonic/gin
+          - github.com/rs/zerolog
+        test_coverage: "≥ 70%"
+
+  - id: T-12-worker
+    title: 实现 worker/ NodeWorker 主体
+    description: |
+      在 worker/ 包实现完整的 NodeWorker，包含 6 个子模块：
+      1. Worker 启动与注册：
+         - 生成 WorkerID（worker-{ip}-{pid}-{uuid}）
+         - 解析本地 IP，记录 workerIP
+         - 启动 gRPC 服务（默认 9001 端口）
+         - 向 NacosRegistry 注册，注册失败重试 3 次
+         - 注册 os.Signal 关闭钩子，进程退出时注销
+      2. NodeExecutorContainer：
+         - sync.Map 存储执行器
+         - Register：校验类型唯一性
+         - Get/List：线程安全查询
+         - 内置 log/http/sleep 三种执行器（log 打印日志，http 发 HTTP 请求，sleep 延时）
+      3. TaskExecutionManager：
+         - 按节点类型维护 semaphore（channel 实现），控制最大并发数
+         - Submit：获取信号量 → 启动 goroutine → context.WithTimeout 超时控制 → 执行 → 上报结果 → 释放信号量
+         - Cancel：关闭对应 context 取消执行
+         - GetCurrentLoad：返回各类型当前执行数
+      4. gRPC 服务端：
+         - 实现 NodeWorkerService（AssignTask/CancelTask）
+         - 请求日志 + panic recovery interceptor
+      5. 心跳上报：
+         - 每 5 秒通过 rpc.EngineClient 发送 Heartbeat（含当前负载）
+         - 失败重试 3 次，连续失败停止接收新任务
+      6. 错误上报：
+         - 捕获 panic，转为 error 通过 rpc.EngineClient.ReportError 上报
+         - zerolog 记录本地日志
+      提供 NodeWorker.Start/Stop/Register 三个公开方法。
+      提供单元测试覆盖：执行器注册/获取、并发控制（信号量）、任务超时控制。
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    priority: high
+    status: pending
+    dependencies:
+      - T-05-dag
+      - T-09-lock-redis
+      - T-10-registry-nacos
+      - T-06-rpc
+    conflicts_with: []
+    context_files:
+      - path: docs/D1.md
+        description: §5.2 NodeWorker 核心模块全部 6 个子模块设计
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: 初始规划
+        timestamp: "2026-04-27T00:00:00+08:00"
+        estimated_effort: large
+        estimated_files: 3
+        estimated_lines: 300
+        focus_area: 分布式执行节点
+        verification:
+          - go build ./worker/... 通过
+          - 单元测试（并发控制/执行器注册）通过
+          - Worker 启动后可向 Nacos 注册（集成测试）
+        acceptance_criteria:
+          - 实现 NodeExecutor 接口（Type/Execute）
+          - 内置 log/http/sleep 三种执行器可正常使用
+          - 信号量正确控制每种节点类型的最大并发数
+          - 任务超时通过 context.WithTimeout 实现
+          - 心跳每 5 秒发送一次
+        failure_modes:
+          - scenario: goroutine 泄漏（任务取消后 goroutine 未退出）
+            likelihood: medium
+            impact: medium
+            mitigation: 所有任务 goroutine 通过 context 控制，Cancel 时关闭 context
+          - scenario: semaphore 实现不正确导致并发数超限
+            likelihood: low
+            impact: high
+            mitigation: 使用 buffered channel 实现信号量，单元测试验证边界并发
+        tech_stack:
+          - Go 1.22+
+          - google.golang.org/grpc
+          - github.com/rs/zerolog
+        test_coverage: "≥ 80%"
+
+  # ─────────────────── Wave 5：HTTP 端点 + 示例 ───────────────────
+  - id: T-13-endpoint-http
+    title: 实现 endpoint/http/ HTTP 触发端点
+    description: |
+      在 endpoint/http/ 包完善 HTTP 触发端点（补充 T-11b 中 Engine 内置实现之外的独立封装）：
+      1. HTTPEndpoint 结构体，实现 interfaces.HTTPEndpointService。
+      2. 中间件：请求日志（zerolog）、统一错误处理、请求 ID 注入（X-Request-ID）。
+      3. 标准响应格式：{"code":0,"message":"ok","data":{...}}。
+      4. 路由：
+         - POST /api/v1/workflow/:workflowID/start → 触发流程
+         - GET  /api/v1/workflow/:workflowID/instance/:instanceID → 查询实例状态
+      5. 优雅关闭：http.Server.Shutdown（10 秒超时）。
+      6. 提供 NewHTTPEndpoint(svc interfaces.WorkflowService, addr string) *HTTPEndpoint 工厂函数。
+      单元测试使用 httptest 包，Mock WorkflowService，覆盖成功/参数错误场景。
+    wave: 5
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies:
+      - T-11b-engine-services
+    conflicts_with: []
+    context_files:
+      - path: docs/D1.md
+        description: §5.1.5 HTTPEndpointService 核心实现逻辑
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: 初始规划
+        timestamp: "2026-04-27T00:00:00+08:00"
+        estimated_effort: medium
+        estimated_files: 2
+        estimated_lines: 200
+        focus_area: HTTP 触发层
+        verification:
+          - go test ./endpoint/http/... -v 通过
+          - POST 返回 {"code":0,"data":{"instanceId":"..."}}
+        acceptance_criteria:
+          - 实现 HTTPEndpointService 全部 3 个方法
+          - 标准响应格式一致
+          - 优雅关闭正常工作
+          - httptest 单元测试通过
+        failure_modes:
+          - scenario: Gin 路由参数解析失败导致 panic
+            likelihood: low
+            impact: medium
+            mitigation: 统一 recovery 中间件捕获 panic，返回 500 标准错误
+        tech_stack:
+          - github.com/gin-gonic/gin
+          - github.com/rs/zerolog
+        test_coverage: "≥ 80%"
+
+  - id: T-14-examples
+    title: 实现 examples/ 三个可运行示例
+    description: |
+      在 examples/ 目录创建 3 个独立的可运行示例，每个示例均可通过 `go run .` 直接启动：
+      1. examples/serial/main.go：
+         - 串行三节点流程：node-a → node-b → node-c
+         - 使用内置 log 执行器，每个节点打印日志并传递上下文数据
+         - 同时启动 Engine + NodeWorker（单进程演示）
+      2. examples/branch/main.go：
+         - 分支流程：start → success-branch + failure-branch（ConnectionType 区分）
+         - 演示 success/failure 分支连线类型的路由逻辑
+      3. examples/parallel/main.go：
+         - 并行聚合：start → [node-a, node-b]（并行）→ merge（Any 依赖模式）
+         - 演示 DependencyMode=Any，任意并行节点完成后即触发 merge
+      每个示例包含：
+         - 完整的 WorkflowDef 定义（Go 代码构造）
+         - Engine 和 NodeWorker 的启动配置
+         - 自定义执行器注册示例
+         - README.md 说明运行前置条件和步骤
+      使用 Docker Compose 提供本地开发依赖启动脚本（examples/docker-compose.yml）。
+    wave: 5
+    agent: gem-implementer
+    prototype: false
+    priority: medium
+    status: pending
+    dependencies:
+      - T-11b-engine-services
+      - T-12-worker
+      - T-13-endpoint-http
+    conflicts_with: []
+    context_files:
+      - path: docs/D1.md
+        description: §2.3 量化交付标准（示例要求）
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: 初始规划
+        timestamp: "2026-04-27T00:00:00+08:00"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 250
+        focus_area: 集成示例
+        verification:
+          - go build ./examples/... 通过
+          - serial 示例流程执行完成，3 个节点状态均为 completed
+          - branch 示例路由到正确分支
+          - parallel 示例 Any 依赖触发正确
+        acceptance_criteria:
+          - 3 个示例均可 go run . 启动
+          - 串行/分支/并行三种 DAG 模式覆盖
+          - 每个示例含 README.md
+          - docker-compose.yml 提供完整依赖服务
+        failure_modes:
+          - scenario: 示例依赖真实 Nacos/Redis/SQL Server，本地无法运行
+            likelihood: high
+            impact: medium
+            mitigation: docker-compose.yml 提供一键启动依赖环境；示例文档明确前置条件
+        tech_stack:
+          - Go 1.22+
+          - Docker Compose
+        test_coverage: null
+
+  # ─────────────────── Wave 6：文档 ───────────────────
+  - id: T-15-docs
+    title: 编写 Go Doc 文档与开发接入指南
+    description: |
+      完成 D1 阶段文档输出：
+      1. 所有公开包/接口/结构体/方法均有 Go Doc 注释（符合 godoc 规范）。
+      2. docs/D1-GUIDE.md（开发接入指南）：
+         - 快速开始：安装依赖、配置文件说明、启动 Engine 和 NodeWorker
+         - 自定义节点执行器接入教程（实现 NodeExecutor 接口 → 注册 → 运行）
+         - 工作流定义方式说明（Go 代码构造 WorkflowDef）
+         - 3 个示例的说明与运行步骤
+         - 配置项参考（Engine/Worker/Redis/SQL Server/Nacos）
+      3. docs/D1-API.md（接口参考）：
+         - 所有核心接口方法签名与说明
+         - gRPC 服务与错误码参考
+         - HTTP API 文档（请求/响应示例）
+      4. README.md（根目录）更新：
+         - 项目简介、架构图（Mermaid）、D1 阶段能力列表、快速开始链接
+    wave: 6
+    agent: gem-documentation-writer
+    prototype: false
+    priority: low
+    status: pending
+    dependencies:
+      - T-14-examples
+    conflicts_with: []
+    context_files:
+      - path: docs/D1.md
+        description: D1 阶段完整设计文档
+      - path: docs/architectural-design.md
+        description: 整体架构设计文档
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: 初始规划
+        timestamp: "2026-04-27T00:00:00+08:00"
+        estimated_effort: medium
+        estimated_files: 3
+        estimated_lines: 250
+        focus_area: 开发文档
+        verification:
+          - go doc ./... 无格式错误
+          - D1-GUIDE.md 涵盖快速开始/自定义节点/配置项三部分
+          - README.md 包含架构图
+        acceptance_criteria:
+          - 所有公开接口有 Go Doc 注释
+          - D1-GUIDE.md 可作为独立接入文档使用
+          - HTTP API 文档包含请求/响应示例
+        failure_modes: []
+        task_type: documentation
+        audience: developers
+        coverage_matrix:
+          - Go Doc 注释覆盖所有公开 API
+          - 快速开始指南
+          - 自定义节点执行器接入教程
+          - HTTP API 参考
+          - gRPC 错误码参考
+          - 配置项参考
