@@ -145,5 +145,3 @@ type HTTPEndpointService interface {
 	// RegisterWorkflowEndpoint 注册工作流的 HTTP 触发端点
 	RegisterWorkflowEndpoint(workflowID string, path string) error
 }
-
-

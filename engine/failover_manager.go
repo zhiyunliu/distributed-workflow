@@ -15,8 +15,8 @@ import (
 
 const (
 	failoverHealthCheckInterval = 10 * time.Second
-	unhealthyThreshold          = 3  // 连续 N 次失败 = unhealthy
-	offlineThreshold            = 5  // 连续 N 次失败 = offline + failover
+	unhealthyThreshold          = 3 // 连续 N 次失败 = unhealthy
+	offlineThreshold            = 5 // 连续 N 次失败 = offline + failover
 )
 
 // failoverManagerImpl FailoverManager 实现
@@ -28,10 +28,10 @@ type failoverManagerImpl struct {
 	redisClient  *redis.Client
 	logger       zerolog.Logger
 
-	mu        sync.Mutex
-	stopCh    chan struct{}
-	wg        sync.WaitGroup
-	running   bool
+	mu      sync.Mutex
+	stopCh  chan struct{}
+	wg      sync.WaitGroup
+	running bool
 }
 
 // NewFailoverManager 创建故障切换管理器

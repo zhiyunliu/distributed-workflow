@@ -130,4 +130,3 @@ func (c *contextManagerImpl) RestoreSnapshot(instanceID string, snapshotID strin
 	}
 	return c.redis.Set(bg, contextKey(instanceID), b, 72*time.Hour).Err()
 }
-

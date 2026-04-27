@@ -41,13 +41,13 @@ func (s *subflowManagerImpl) TriggerSubflow(parentInstanceID, parentNodeID strin
 	// 创建子流程实例
 	instanceID := uuid.New().String()
 	instance := &types.WorkflowInstance{
-		ID:               instanceID,
-		WorkflowID:       def.ID,
-		Status:           types.WorkflowStatusPending,
-		InputData:        inputData,
+		ID:                instanceID,
+		WorkflowID:        def.ID,
+		Status:            types.WorkflowStatusPending,
+		InputData:         inputData,
 		IsSubflowInstance: true,
-		ParentInstanceID: parentInstanceID,
-		ParentNodeID:     parentNodeID,
+		ParentInstanceID:  parentInstanceID,
+		ParentNodeID:      parentNodeID,
 	}
 
 	if _, err := s.workflowSvc.StartWorkflow(def.ID, inputData, "subflow"); err != nil {

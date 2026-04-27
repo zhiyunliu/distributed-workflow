@@ -11,10 +11,10 @@ import (
 
 // WorkflowServiceImpl 实现 interfaces.WorkflowService
 type WorkflowServiceImpl struct {
-	repo        interfaces.WorkflowRepository
-	sched       interfaces.SchedulerService
-	state       interfaces.InstanceStateService
-	versionMgr  interfaces.WorkflowVersionManager
+	repo         interfaces.WorkflowRepository
+	sched        interfaces.SchedulerService
+	state        interfaces.InstanceStateService
+	versionMgr   interfaces.WorkflowVersionManager
 	lifecycleMgr interfaces.LifecycleManager
 }
 
