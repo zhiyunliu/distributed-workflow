@@ -76,6 +76,13 @@ func (s *SchedulerServiceImpl) ScheduleNextNodes(instanceID string) error {
 		return fmt.Errorf("get instance '%s': %w", instanceID, err)
 	}
 
+	// 暂停或已终止的实例不继续调度
+	if instance.Status == types.WorkflowStatusPaused ||
+		instance.Status == types.WorkflowStatusCancelled ||
+		instance.Status == types.WorkflowStatusCompleted {
+		return nil
+	}
+
 	def, err := s.repo.GetWorkflowDef(instance.WorkflowID)
 	if err != nil {
 		return fmt.Errorf("get workflow def '%s': %w", instance.WorkflowID, err)
@@ -303,4 +310,125 @@ func copyMap(src map[string]interface{}) map[string]interface{} {
 // marshalJSON 辅助序列化（供后续使用）
 func marshalJSON(v interface{}) ([]byte, error) {
 	return json.Marshal(v)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D2 新增：生命周期调度控制
+// ─────────────────────────────────────────────────────────────────────────────
+
+// PauseExecution 暂停实例调度（中断继续派发，正在执行的节点不干预）
+func (s *SchedulerServiceImpl) PauseExecution(instanceID string) error {
+	// 暂停实例状态已由 LifecycleManager 更新；此处只需确保不再派发新节点
+	// ScheduleNextNodes 内部会检查实例状态，paused 状态下直接返回
+	log.Info().Str("instance_id", instanceID).Msg("execution paused")
+	return nil
+}
+
+// ResumeExecution 恢复实例调度
+func (s *SchedulerServiceImpl) ResumeExecution(instanceID string) error {
+	return s.ScheduleNextNodes(instanceID)
+}
+
+// CancelExecution 取消执行（向所有运行中节点发送 Pause/Cancel 指令）
+func (s *SchedulerServiceImpl) CancelExecution(instanceID string) error {
+	nodeStates, err := s.repo.ListWorkflowNodeStates(instanceID)
+	if err != nil {
+		return fmt.Errorf("cancel execution list node states: %w", err)
+	}
+	for _, ns := range nodeStates {
+		if ns.Status == types.WorkflowNodeStatusRunning && ns.AssignedTo != "" {
+			if err := s.worker.HandleWorkerOffline(ns.AssignedTo); err != nil {
+				log.Warn().Err(err).Str("node_id", ns.NodeID).Msg("cancel: notify worker failed")
+			}
+		}
+	}
+	log.Info().Str("instance_id", instanceID).Msg("execution cancelled")
+	return nil
+}
+
+// RetryExecution 重试整个实例（重新调度）
+func (s *SchedulerServiceImpl) RetryExecution(instanceID string) error {
+	return s.ScheduleNextNodes(instanceID)
+}
+
+// RetrySingleNode 重试单个节点
+func (s *SchedulerServiceImpl) RetrySingleNode(instanceID string, nodeID string) error {
+	instance, err := s.repo.GetWorkflowInstance(instanceID)
+	if err != nil {
+		return fmt.Errorf("get instance: %w", err)
+	}
+	def, err := s.repo.GetWorkflowDef(instance.WorkflowID)
+	if err != nil {
+		return fmt.Errorf("get def: %w", err)
+	}
+	graph, err := s.dagPars.Parse(def)
+	if err != nil {
+		return fmt.Errorf("parse dag: %w", err)
+	}
+	nodeStates, err := s.repo.ListWorkflowNodeStates(instanceID)
+	if err != nil {
+		return fmt.Errorf("list node states: %w", err)
+	}
+	stateMap := make(map[string]*types.WorkflowNodeState, len(nodeStates))
+	for _, ns := range nodeStates {
+		stateMap[ns.NodeID] = ns
+	}
+	wfCtx, err := s.repo.GetWorkflowContext(instanceID)
+	if err != nil {
+		return fmt.Errorf("get context: %w", err)
+	}
+	// 删除 stateMap 中目标节点，以便 scheduleNode 重新创建
+	delete(stateMap, nodeID)
+	return s.scheduleNode(instance, def, graph, nodeID, wfCtx, stateMap)
+}
+
+// HandleWorkerFailure 处理 Worker 故障：将分配给该 Worker 的节点重新调度
+func (s *SchedulerServiceImpl) HandleWorkerFailure(workerID string) error {
+	nodes, err := s.repo.GetAssignedNodesByWorker(workerID)
+	if err != nil {
+		return fmt.Errorf("get assigned nodes by worker: %w", err)
+	}
+	// 重置节点为 pending 状态，等待重新调度
+	instanceGroups := make(map[string][]string)
+	for _, n := range nodes {
+		instanceGroups[n.InstanceID] = append(instanceGroups[n.InstanceID], n.NodeID)
+	}
+	for instanceID, nodeIDs := range instanceGroups {
+		if err := s.state.BatchUpdateNodeStatus(instanceID, nodeIDs, types.WorkflowNodeStatusPending, "worker failure: "+workerID); err != nil {
+			log.Error().Err(err).Str("instance_id", instanceID).Msg("reset nodes for worker failure")
+		}
+		// 触发重新调度
+		if err := s.ScheduleNextNodes(instanceID); err != nil {
+			log.Error().Err(err).Str("instance_id", instanceID).Msg("reschedule after worker failure")
+		}
+	}
+	return nil
+}
+
+// ProcessRetryQueue 处理到期的重试节点（定时调用）
+func (s *SchedulerServiceImpl) ProcessRetryQueue() error {
+	// 从数据库查询 next_retry_time <= now 且 status = 'failed' 的节点
+	// 此处调用 ScheduleNextNodes 对各实例重新调度
+	instances, err := s.repo.ListUnfinishedInstances()
+	if err != nil {
+		return fmt.Errorf("process retry queue: list instances: %w", err)
+	}
+	now := time.Now()
+	for _, inst := range instances {
+		nodeStates, err := s.repo.ListWorkflowNodeStates(inst.ID)
+		if err != nil {
+			continue
+		}
+		for _, ns := range nodeStates {
+			if ns.Status == types.WorkflowNodeStatusFailed && ns.NextRetryTime != nil && !ns.NextRetryTime.After(now) {
+				// 重置为 pending 触发重新调度
+				ns.Status = types.WorkflowNodeStatusPending
+				if err := s.repo.UpdateWorkflowNodeState(ns); err != nil {
+					log.Error().Err(err).Str("node_id", ns.NodeID).Msg("retry queue reset node failed")
+				}
+			}
+		}
+		_ = s.ScheduleNextNodes(inst.ID)
+	}
+	return nil
 }

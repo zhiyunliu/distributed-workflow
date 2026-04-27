@@ -30,6 +30,8 @@ type WorkflowRepository interface {
 	GetWorkflowInstance(instanceID string) (*types.WorkflowInstance, error)
 	// ListUnfinishedInstances 查询所有未完成的实例（用于引擎重启恢复）
 	ListUnfinishedInstances() ([]*types.WorkflowInstance, error)
+	// ListWorkflowInstances 分页查询实例列表（D2新增）
+	ListWorkflowInstances(workflowID string, status types.WorkflowStatus, pageSize, pageNum int) ([]*types.WorkflowInstance, error)
 
 	// ─── 节点状态 ─────────────────────────────────────────────────────
 	// CreateWorkflowNodeState 创建节点执行状态
@@ -40,6 +42,12 @@ type WorkflowRepository interface {
 	GetWorkflowNodeState(instanceID string, nodeID string) (*types.WorkflowNodeState, error)
 	// ListWorkflowNodeStates 获取实例的所有节点状态
 	ListWorkflowNodeStates(instanceID string) ([]*types.WorkflowNodeState, error)
+	// BatchUpdateNodeStates 批量更新节点状态（D2新增，用于取消/跳过场景）
+	BatchUpdateNodeStates(instanceID string, nodeIDs []string, status types.WorkflowNodeStatus, reason string) error
+	// GetAssignedNodesByWorker 获取分配给指定 Worker 的节点（D2新增，用于故障转移）
+	GetAssignedNodesByWorker(workerID string) ([]*types.WorkflowNodeState, error)
+	// GetFailedNodes 获取实例中所有失败的节点（D2新增）
+	GetFailedNodes(instanceID string) ([]*types.WorkflowNodeState, error)
 
 	// ─── 上下文 ───────────────────────────────────────────────────────
 	// CreateWorkflowContext 创建流程上下文
@@ -50,6 +58,30 @@ type WorkflowRepository interface {
 	GetWorkflowContext(instanceID string) (*types.WorkflowContext, error)
 	// DeleteWorkflowContext 删除流程上下文
 	DeleteWorkflowContext(instanceID string) error
+
+	// ─── 版本管理（D2新增） ──────────────────────────────────────────
+	// CreateWorkflowVersion 创建新版本
+	CreateWorkflowVersion(ver *types.WorkflowVersion) error
+	// GetWorkflowVersion 获取指定版本
+	GetWorkflowVersion(workflowID string, version int) (*types.WorkflowVersion, error)
+	// GetCurrentWorkflowVersion 获取当前生效版本
+	GetCurrentWorkflowVersion(workflowID string) (*types.WorkflowVersion, error)
+	// ListWorkflowVersions 列举所有版本
+	ListWorkflowVersions(workflowID string) ([]*types.WorkflowVersion, error)
+	// SetCurrentVersion 设置当前生效版本
+	SetCurrentVersion(workflowID string, version int) error
+	// UpdateVersionGrayConfig 更新版本灰度配置
+	UpdateVersionGrayConfig(workflowID string, version int, cfg *types.GrayReleaseConfig) error
+
+	// ─── 死信队列（D2新增） ──────────────────────────────────────────
+	// CreateDeadLetterTask 将任务加入死信队列
+	CreateDeadLetterTask(task *types.DeadLetterTask) error
+	// GetDeadLetterTask 获取死信任务
+	GetDeadLetterTask(id string) (*types.DeadLetterTask, error)
+	// ListDeadLetterTasks 列举死信任务
+	ListDeadLetterTasks(instanceID string) ([]*types.DeadLetterTask, error)
+	// UpdateDeadLetterTask 更新死信任务（重发计数等）
+	UpdateDeadLetterTask(task *types.DeadLetterTask) error
 }
 
 // RedisRepository Redis 存储接口

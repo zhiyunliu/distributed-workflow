@@ -287,8 +287,10 @@ var EngineService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	NodeWorkerService_AssignTask_FullMethodName = "/distributedworkflow.NodeWorkerService/AssignTask"
-	NodeWorkerService_CancelTask_FullMethodName = "/distributedworkflow.NodeWorkerService/CancelTask"
+	NodeWorkerService_AssignTask_FullMethodName  = "/distributedworkflow.NodeWorkerService/AssignTask"
+	NodeWorkerService_CancelTask_FullMethodName  = "/distributedworkflow.NodeWorkerService/CancelTask"
+	NodeWorkerService_PauseTask_FullMethodName   = "/distributedworkflow.NodeWorkerService/PauseTask"
+	NodeWorkerService_HealthCheck_FullMethodName = "/distributedworkflow.NodeWorkerService/HealthCheck"
 )
 
 // NodeWorkerServiceClient is the client API for NodeWorkerService service.
@@ -301,6 +303,10 @@ type NodeWorkerServiceClient interface {
 	AssignTask(ctx context.Context, in *AssignTaskRequest, opts ...grpc.CallOption) (*AssignTaskResponse, error)
 	// CancelTask 取消 Worker 上正在执行的任务
 	CancelTask(ctx context.Context, in *CancelTaskRequest, opts ...grpc.CallOption) (*CancelTaskResponse, error)
+	// PauseTask 暂停 Worker 上正在执行的任务（D2 新增）
+	PauseTask(ctx context.Context, in *PauseTaskRequest, opts ...grpc.CallOption) (*PauseTaskResponse, error)
+	// HealthCheck 获取 Worker 健康状态（D2 新增）
+	HealthCheck(ctx context.Context, in *HealthCheckRequest, opts ...grpc.CallOption) (*HealthCheckResponse, error)
 }
 
 type nodeWorkerServiceClient struct {
@@ -331,6 +337,26 @@ func (c *nodeWorkerServiceClient) CancelTask(ctx context.Context, in *CancelTask
 	return out, nil
 }
 
+func (c *nodeWorkerServiceClient) PauseTask(ctx context.Context, in *PauseTaskRequest, opts ...grpc.CallOption) (*PauseTaskResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PauseTaskResponse)
+	err := c.cc.Invoke(ctx, NodeWorkerService_PauseTask_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeWorkerServiceClient) HealthCheck(ctx context.Context, in *HealthCheckRequest, opts ...grpc.CallOption) (*HealthCheckResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(HealthCheckResponse)
+	err := c.cc.Invoke(ctx, NodeWorkerService_HealthCheck_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // NodeWorkerServiceServer is the server API for NodeWorkerService service.
 // All implementations must embed UnimplementedNodeWorkerServiceServer
 // for forward compatibility.
@@ -341,6 +367,10 @@ type NodeWorkerServiceServer interface {
 	AssignTask(context.Context, *AssignTaskRequest) (*AssignTaskResponse, error)
 	// CancelTask 取消 Worker 上正在执行的任务
 	CancelTask(context.Context, *CancelTaskRequest) (*CancelTaskResponse, error)
+	// PauseTask 暂停 Worker 上正在执行的任务（D2 新增）
+	PauseTask(context.Context, *PauseTaskRequest) (*PauseTaskResponse, error)
+	// HealthCheck 获取 Worker 健康状态（D2 新增）
+	HealthCheck(context.Context, *HealthCheckRequest) (*HealthCheckResponse, error)
 	mustEmbedUnimplementedNodeWorkerServiceServer()
 }
 
@@ -356,6 +386,12 @@ func (UnimplementedNodeWorkerServiceServer) AssignTask(context.Context, *AssignT
 }
 func (UnimplementedNodeWorkerServiceServer) CancelTask(context.Context, *CancelTaskRequest) (*CancelTaskResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CancelTask not implemented")
+}
+func (UnimplementedNodeWorkerServiceServer) PauseTask(context.Context, *PauseTaskRequest) (*PauseTaskResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PauseTask not implemented")
+}
+func (UnimplementedNodeWorkerServiceServer) HealthCheck(context.Context, *HealthCheckRequest) (*HealthCheckResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method HealthCheck not implemented")
 }
 func (UnimplementedNodeWorkerServiceServer) mustEmbedUnimplementedNodeWorkerServiceServer() {}
 func (UnimplementedNodeWorkerServiceServer) testEmbeddedByValue()                           {}
@@ -414,6 +450,42 @@ func _NodeWorkerService_CancelTask_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NodeWorkerService_PauseTask_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PauseTaskRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeWorkerServiceServer).PauseTask(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeWorkerService_PauseTask_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeWorkerServiceServer).PauseTask(ctx, req.(*PauseTaskRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeWorkerService_HealthCheck_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HealthCheckRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeWorkerServiceServer).HealthCheck(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeWorkerService_HealthCheck_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeWorkerServiceServer).HealthCheck(ctx, req.(*HealthCheckRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // NodeWorkerService_ServiceDesc is the grpc.ServiceDesc for NodeWorkerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -428,6 +500,14 @@ var NodeWorkerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CancelTask",
 			Handler:    _NodeWorkerService_CancelTask_Handler,
+		},
+		{
+			MethodName: "PauseTask",
+			Handler:    _NodeWorkerService_PauseTask_Handler,
+		},
+		{
+			MethodName: "HealthCheck",
+			Handler:    _NodeWorkerService_HealthCheck_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

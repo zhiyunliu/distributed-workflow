@@ -44,7 +44,7 @@ func main() {
 		log.Fatal().Err(err).Msg("connect redis failed")
 	}
 
-	eng := engine.New(engine.Config{GRPCAddr: engineGRPCAddr}, repo, redisClient)
+	eng := engine.New(engine.Config{GRPCAddr: engineGRPCAddr}, repo, redisClient, redisClient.RawClient())
 	if err := eng.Start(); err != nil {
 		log.Fatal().Err(err).Msg("start engine failed")
 	}

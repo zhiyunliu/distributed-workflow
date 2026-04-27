@@ -106,3 +106,48 @@ func (s *InstanceStateServiceImpl) ReportTaskResult(result *types.TaskResult) er
 	}
 	return nil
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D2 新增方法
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ValidateStateTransition 验证状态转换是否合法
+func (s *InstanceStateServiceImpl) ValidateStateTransition(fromStatus, toStatus types.WorkflowStatus) error {
+	targets, ok := validTransitions[fromStatus]
+	if !ok {
+		return fmt.Errorf("unknown source status '%s'", fromStatus)
+	}
+	if !targets[toStatus] {
+		return fmt.Errorf("invalid state transition: %s → %s", fromStatus, toStatus)
+	}
+	return nil
+}
+
+// BatchUpdateNodeStatus 批量更新节点状态
+func (s *InstanceStateServiceImpl) BatchUpdateNodeStatus(instanceID string, nodeIDs []string, status types.WorkflowNodeStatus, reason string) error {
+	return s.repo.BatchUpdateNodeStates(instanceID, nodeIDs, status, reason)
+}
+
+// UpdateRetryState 更新节点重试状态（重试计数 + 下次重试时间）
+func (s *InstanceStateServiceImpl) UpdateRetryState(instanceID string, nodeID string, retryCount int, nextRetryTimeUnix *int64) error {
+	state, err := s.repo.GetWorkflowNodeState(instanceID, nodeID)
+	if err != nil {
+		return fmt.Errorf("get node state: %w", err)
+	}
+	state.RetryCount = retryCount
+	if nextRetryTimeUnix != nil {
+		t := time.Unix(*nextRetryTimeUnix, 0)
+		state.NextRetryTime = &t
+	}
+	return s.repo.UpdateWorkflowNodeState(state)
+}
+
+// GetFailedNodes 获取实例所有失败节点
+func (s *InstanceStateServiceImpl) GetFailedNodes(instanceID string) ([]*types.WorkflowNodeState, error) {
+	return s.repo.GetFailedNodes(instanceID)
+}
+
+// GetAssignedNodesByWorker 获取分配给指定 Worker 的节点
+func (s *InstanceStateServiceImpl) GetAssignedNodesByWorker(workerID string) ([]*types.WorkflowNodeState, error) {
+	return s.repo.GetAssignedNodesByWorker(workerID)
+}

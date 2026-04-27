@@ -171,3 +171,47 @@ func (wc *WorkerClient) CancelTask(address, instanceID, nodeID, reason string) e
 		Msg("CancelTask success")
 	return nil
 }
+
+// PauseTask 暂停指定 Worker 上正在执行的任务
+func (wc *WorkerClient) PauseTask(address, instanceID, nodeID string) error {
+	c, err := wc.getConn(address)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
+	defer cancel()
+
+	resp, err := c.client.PauseTask(ctx, &proto.PauseTaskRequest{
+		WorkflowInstanceId: instanceID,
+		WorkflowNodeId:     nodeID,
+	})
+	if err != nil {
+		return fmt.Errorf("pause task rpc error: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("pause task failed: code=%d msg=%s", resp.Code, resp.Message)
+	}
+	return nil
+}
+
+// HealthCheck 对指定 Worker 发起健康检查，返回 true 表示 Worker 正常
+func (wc *WorkerClient) HealthCheck(address, workerID string) bool {
+	c, err := wc.getConn(address)
+	if err != nil {
+		log.Warn().Str("address", address).Err(err).Msg("HealthCheck: connect failed")
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := c.client.HealthCheck(ctx, &proto.HealthCheckRequest{
+		WorkerId: workerID,
+	})
+	if err != nil {
+		log.Warn().Str("worker_id", workerID).Err(err).Msg("HealthCheck rpc failed")
+		return false
+	}
+	return resp.Success
+}

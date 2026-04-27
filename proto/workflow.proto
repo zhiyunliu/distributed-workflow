@@ -23,6 +23,10 @@ service NodeWorkerService {
   rpc AssignTask(AssignTaskRequest) returns (AssignTaskResponse);
   // CancelTask 取消 Worker 上正在执行的任务
   rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
+  // PauseTask 暂停 Worker 上正在执行的任务（D2 新增）
+  rpc PauseTask(PauseTaskRequest) returns (PauseTaskResponse);
+  // HealthCheck 获取 Worker 健康状态（D2 新增）
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -77,8 +81,9 @@ message ReportTaskResultRequest {
   bool success = 4;                // 是否执行成功
   bytes output_data = 5;           // 执行输出数据（JSON 序列化）
   string error_message = 6;        // 错误信息
-  int64 start_time = 7;            // 执行开始时间（Unix 毫秒）
-  int64 end_time = 8;              // 执行结束时间（Unix 毫秒）
+  string error_code = 7;           // 错误码（D2 新增）
+  int64 start_time = 8;            // 执行开始时间（Unix 毫秒）
+  int64 end_time = 9;              // 执行结束时间（Unix 毫秒）
 }
 
 // ReportTaskResultResponse 上报任务结果响应
@@ -95,8 +100,9 @@ message ReportErrorRequest {
   string workflow_instance_id = 3; // 流程实例 ID
   string workflow_node_id = 4;     // 节点 ID
   string error_message = 5;        // 错误信息
-  string stack_trace = 6;          // 错误堆栈
-  int64 occur_time = 7;            // 发生时间（Unix 毫秒）
+  string error_code = 6;           // 错误码（D2 新增）
+  string stack_trace = 7;          // 错误堆栈
+  int64 occur_time = 8;            // 发生时间（Unix 毫秒）
 }
 
 // ReportErrorResponse 上报错误响应
@@ -141,4 +147,30 @@ message CancelTaskResponse {
   int32 code = 1;
   string message = 2;
   bool success = 3;
+}
+
+// PauseTaskRequest 暂停任务请求（D2 新增）
+message PauseTaskRequest {
+  string workflow_instance_id = 1; // 流程实例 ID
+  string workflow_node_id = 2;     // 节点 ID
+}
+
+// PauseTaskResponse 暂停任务响应（D2 新增）
+message PauseTaskResponse {
+  int32 code = 1;
+  string message = 2;
+  bool success = 3;
+}
+
+// HealthCheckRequest Worker 健康检查请求（D2 新增）
+message HealthCheckRequest {
+  string worker_id = 1; // Worker ID
+}
+
+// HealthCheckResponse Worker 健康检查响应（D2 新增）
+message HealthCheckResponse {
+  int32 code = 1;
+  string message = 2;
+  bool healthy = 3;
+  map<string, int32> current_load = 4; // 当前负载
 }

@@ -717,3 +717,530 @@ func scanNodeStateRow(rows *sql.Rows) (*types.WorkflowNodeState, error) {
 	}
 	return &state, nil
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D2 新增：流程实例列表查询
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ListWorkflowInstances 分页查询流程实例列表
+func (r *Repository) ListWorkflowInstances(workflowID string, status types.WorkflowStatus, pageSize, pageNum int) ([]*types.WorkflowInstance, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if pageNum <= 0 {
+		pageNum = 1
+	}
+	offset := (pageNum - 1) * pageSize
+
+	q := `
+SELECT id, workflow_id, workflow_version, status, start_time, end_time,
+       input_data, output_data, created_by, error_message
+FROM workflow_instances WHERE 1=1`
+
+	var args []interface{}
+	argIdx := 1
+	if workflowID != "" {
+		q += fmt.Sprintf(" AND workflow_id = @p%d", argIdx)
+		args = append(args, sql.Named(fmt.Sprintf("p%d", argIdx), workflowID))
+		argIdx++
+	}
+	if status != "" {
+		q += fmt.Sprintf(" AND status = @p%d", argIdx)
+		args = append(args, sql.Named(fmt.Sprintf("p%d", argIdx), string(status)))
+		argIdx++
+	}
+	_ = argIdx
+	q += ` ORDER BY start_time DESC OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY`
+	args = append(args, sql.Named("offset", offset), sql.Named("pageSize", pageSize))
+
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, wrapDBErr(err, "ListWorkflowInstances")
+	}
+	defer rows.Close()
+
+	var instances []*types.WorkflowInstance
+	for rows.Next() {
+		inst, err := scanInstanceRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		instances = append(instances, inst)
+	}
+	return instances, rows.Err()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D2 新增：节点状态批量操作
+// ─────────────────────────────────────────────────────────────────────────────
+
+// BatchUpdateNodeStates 批量更新节点状态（取消/跳过场景）
+func (r *Repository) BatchUpdateNodeStates(instanceID string, nodeIDs []string, status types.WorkflowNodeStatus, reason string) error {
+	if len(nodeIDs) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return wrapDBErr(err, "BatchUpdateNodeStates begin tx")
+	}
+
+	const q = `
+UPDATE workflow_node_states
+SET status = @status, skipped_reason = @reason, end_time = @endTime
+WHERE instance_id = @instanceID AND node_id = @nodeID`
+
+	now := time.Now()
+	for _, nodeID := range nodeIDs {
+		if _, err := tx.ExecContext(ctx, q,
+			sql.Named("status", string(status)),
+			sql.Named("reason", reason),
+			sql.Named("endTime", now),
+			sql.Named("instanceID", instanceID),
+			sql.Named("nodeID", nodeID),
+		); err != nil {
+			_ = tx.Rollback()
+			return wrapDBErr(err, "BatchUpdateNodeStates update node="+nodeID)
+		}
+	}
+	return wrapDBErr(tx.Commit(), "BatchUpdateNodeStates commit")
+}
+
+// GetAssignedNodesByWorker 获取分配给指定 Worker 且仍处于 running/assigned 状态的节点
+func (r *Repository) GetAssignedNodesByWorker(workerID string) ([]*types.WorkflowNodeState, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	const q = `
+SELECT id, instance_id, node_id, status, assigned_to, worker_ip,
+       start_time, end_time, input_data, output_data, error_message, retry_count
+FROM workflow_node_states
+WHERE assigned_to = @workerID AND status IN ('running', 'assigned')`
+
+	rows, err := r.db.QueryContext(ctx, q, sql.Named("workerID", workerID))
+	if err != nil {
+		return nil, wrapDBErr(err, "GetAssignedNodesByWorker")
+	}
+	defer rows.Close()
+
+	var states []*types.WorkflowNodeState
+	for rows.Next() {
+		state, err := scanNodeStateRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		states = append(states, state)
+	}
+	return states, rows.Err()
+}
+
+// GetFailedNodes 获取指定实例中所有失败节点
+func (r *Repository) GetFailedNodes(instanceID string) ([]*types.WorkflowNodeState, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	const q = `
+SELECT id, instance_id, node_id, status, assigned_to, worker_ip,
+       start_time, end_time, input_data, output_data, error_message, retry_count
+FROM workflow_node_states
+WHERE instance_id = @instanceID AND status = 'failed'`
+
+	rows, err := r.db.QueryContext(ctx, q, sql.Named("instanceID", instanceID))
+	if err != nil {
+		return nil, wrapDBErr(err, "GetFailedNodes")
+	}
+	defer rows.Close()
+
+	var states []*types.WorkflowNodeState
+	for rows.Next() {
+		state, err := scanNodeStateRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		states = append(states, state)
+	}
+	return states, rows.Err()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D2 新增：版本管理
+// ─────────────────────────────────────────────────────────────────────────────
+
+// CreateWorkflowVersion 创建新版本记录
+func (r *Repository) CreateWorkflowVersion(ver *types.WorkflowVersion) error {
+	defJSON, err := json.Marshal(ver.Definition)
+	if err != nil {
+		return fmt.Errorf("marshal version definition: %w", err)
+	}
+	var grayCfgJSON string
+	if ver.GrayConfig != nil {
+		b, err := json.Marshal(ver.GrayConfig)
+		if err != nil {
+			return fmt.Errorf("marshal gray_config: %w", err)
+		}
+		grayCfgJSON = string(b)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	const q = `
+INSERT INTO workflow_versions (workflow_id, version, definition, change_log, created_by, created_at, is_current, gray_config)
+VALUES (@workflowID, @version, @def, @changeLog, @createdBy, @createdAt, @isCurrent, @grayConfig)`
+
+	_, err = r.db.ExecContext(ctx, q,
+		sql.Named("workflowID", ver.WorkflowID),
+		sql.Named("version", ver.Version),
+		sql.Named("def", string(defJSON)),
+		sql.Named("changeLog", ver.ChangeLog),
+		sql.Named("createdBy", ver.CreatedBy),
+		sql.Named("createdAt", ver.CreatedAt),
+		sql.Named("isCurrent", ver.IsCurrent),
+		sql.Named("grayConfig", nullString(grayCfgJSON)),
+	)
+	return wrapDBErr(err, "CreateWorkflowVersion")
+}
+
+// GetWorkflowVersion 查询指定版本
+func (r *Repository) GetWorkflowVersion(workflowID string, version int) (*types.WorkflowVersion, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	const q = `
+SELECT id, workflow_id, version, definition, change_log, created_by, created_at, is_current, gray_config
+FROM workflow_versions WHERE workflow_id = @workflowID AND version = @version`
+
+	row := r.db.QueryRowContext(ctx, q,
+		sql.Named("workflowID", workflowID),
+		sql.Named("version", version),
+	)
+	return scanWorkflowVersion(row)
+}
+
+// GetCurrentWorkflowVersion 查询当前生效版本
+func (r *Repository) GetCurrentWorkflowVersion(workflowID string) (*types.WorkflowVersion, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	const q = `
+SELECT id, workflow_id, version, definition, change_log, created_by, created_at, is_current, gray_config
+FROM workflow_versions WHERE workflow_id = @workflowID AND is_current = 1`
+
+	row := r.db.QueryRowContext(ctx, q, sql.Named("workflowID", workflowID))
+	return scanWorkflowVersion(row)
+}
+
+// ListWorkflowVersions 列举所有版本
+func (r *Repository) ListWorkflowVersions(workflowID string) ([]*types.WorkflowVersion, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	const q = `
+SELECT id, workflow_id, version, definition, change_log, created_by, created_at, is_current, gray_config
+FROM workflow_versions WHERE workflow_id = @workflowID ORDER BY version ASC`
+
+	rows, err := r.db.QueryContext(ctx, q, sql.Named("workflowID", workflowID))
+	if err != nil {
+		return nil, wrapDBErr(err, "ListWorkflowVersions")
+	}
+	defer rows.Close()
+
+	var vers []*types.WorkflowVersion
+	for rows.Next() {
+		v, err := scanWorkflowVersionRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		vers = append(vers, v)
+	}
+	return vers, rows.Err()
+}
+
+// SetCurrentVersion 将指定版本设为当前生效版本（事务：先清除所有 is_current，再设置目标）
+func (r *Repository) SetCurrentVersion(workflowID string, version int) error {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return wrapDBErr(err, "SetCurrentVersion begin tx")
+	}
+
+	if _, err = tx.ExecContext(ctx,
+		`UPDATE workflow_versions SET is_current = 0 WHERE workflow_id = @workflowID`,
+		sql.Named("workflowID", workflowID),
+	); err != nil {
+		_ = tx.Rollback()
+		return wrapDBErr(err, "SetCurrentVersion clear current")
+	}
+	if _, err = tx.ExecContext(ctx,
+		`UPDATE workflow_versions SET is_current = 1 WHERE workflow_id = @workflowID AND version = @version`,
+		sql.Named("workflowID", workflowID),
+		sql.Named("version", version),
+	); err != nil {
+		_ = tx.Rollback()
+		return wrapDBErr(err, "SetCurrentVersion set version")
+	}
+	if _, err = tx.ExecContext(ctx,
+		`UPDATE workflow_defs SET current_version = @version WHERE id = @workflowID`,
+		sql.Named("version", version),
+		sql.Named("workflowID", workflowID),
+	); err != nil {
+		_ = tx.Rollback()
+		return wrapDBErr(err, "SetCurrentVersion update defs")
+	}
+	return wrapDBErr(tx.Commit(), "SetCurrentVersion commit")
+}
+
+// UpdateVersionGrayConfig 更新版本灰度配置
+func (r *Repository) UpdateVersionGrayConfig(workflowID string, version int, cfg *types.GrayReleaseConfig) error {
+	var grayCfgJSON string
+	if cfg != nil {
+		b, err := json.Marshal(cfg)
+		if err != nil {
+			return fmt.Errorf("marshal gray_config: %w", err)
+		}
+		grayCfgJSON = string(b)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	const q = `
+UPDATE workflow_versions SET gray_config = @grayConfig
+WHERE workflow_id = @workflowID AND version = @version`
+
+	_, err := r.db.ExecContext(ctx, q,
+		sql.Named("grayConfig", nullString(grayCfgJSON)),
+		sql.Named("workflowID", workflowID),
+		sql.Named("version", version),
+	)
+	return wrapDBErr(err, "UpdateVersionGrayConfig")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D2 新增：死信队列
+// ─────────────────────────────────────────────────────────────────────────────
+
+// CreateDeadLetterTask 将任务入死信队列
+func (r *Repository) CreateDeadLetterTask(task *types.DeadLetterTask) error {
+	taskDataJSON, err := json.Marshal(task.TaskData)
+	if err != nil {
+		return fmt.Errorf("marshal task_data: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	const q = `
+INSERT INTO workflow_dead_letter_tasks
+    (id, instance_id, node_id, worker_id, worker_ip, error_message, error_code, retry_count, task_data, created_at, resend_count)
+VALUES (@id, @instanceID, @nodeID, @workerID, @workerIP, @errMsg, @errCode, @retryCount, @taskData, @createdAt, 0)`
+
+	_, err = r.db.ExecContext(ctx, q,
+		sql.Named("id", task.ID),
+		sql.Named("instanceID", task.InstanceID),
+		sql.Named("nodeID", task.NodeID),
+		sql.Named("workerID", nullString(task.WorkerID)),
+		sql.Named("workerIP", nullString(task.WorkerIP)),
+		sql.Named("errMsg", task.Error),
+		sql.Named("errCode", nullString(task.ErrorCode)),
+		sql.Named("retryCount", task.RetryCount),
+		sql.Named("taskData", string(taskDataJSON)),
+		sql.Named("createdAt", task.CreatedAt),
+	)
+	return wrapDBErr(err, "CreateDeadLetterTask")
+}
+
+// GetDeadLetterTask 获取死信任务
+func (r *Repository) GetDeadLetterTask(id string) (*types.DeadLetterTask, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	const q = `
+SELECT id, instance_id, node_id, worker_id, worker_ip, error_message, error_code,
+       retry_count, task_data, created_at, resend_count, last_resend_at
+FROM workflow_dead_letter_tasks WHERE id = @id`
+
+	row := r.db.QueryRowContext(ctx, q, sql.Named("id", id))
+	return scanDeadLetterTask(row)
+}
+
+// ListDeadLetterTasks 列举实例的死信任务
+func (r *Repository) ListDeadLetterTasks(instanceID string) ([]*types.DeadLetterTask, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	const q = `
+SELECT id, instance_id, node_id, worker_id, worker_ip, error_message, error_code,
+       retry_count, task_data, created_at, resend_count, last_resend_at
+FROM workflow_dead_letter_tasks WHERE instance_id = @instanceID ORDER BY created_at ASC`
+
+	rows, err := r.db.QueryContext(ctx, q, sql.Named("instanceID", instanceID))
+	if err != nil {
+		return nil, wrapDBErr(err, "ListDeadLetterTasks")
+	}
+	defer rows.Close()
+
+	var tasks []*types.DeadLetterTask
+	for rows.Next() {
+		t, err := scanDeadLetterTaskRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, rows.Err()
+}
+
+// UpdateDeadLetterTask 更新死信任务（重发计数等）
+func (r *Repository) UpdateDeadLetterTask(task *types.DeadLetterTask) error {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	const q = `
+UPDATE workflow_dead_letter_tasks
+SET resend_count = @resendCount, last_resend_at = @lastResendAt
+WHERE id = @id`
+
+	var lastResendAt interface{}
+	if task.LastResendAt != nil {
+		lastResendAt = *task.LastResendAt
+	}
+	_, err := r.db.ExecContext(ctx, q,
+		sql.Named("resendCount", task.ResendCount),
+		sql.Named("lastResendAt", lastResendAt),
+		sql.Named("id", task.ID),
+	)
+	return wrapDBErr(err, "UpdateDeadLetterTask")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D2 私有扫描函数
+// ─────────────────────────────────────────────────────────────────────────────
+
+func scanWorkflowVersion(row *sql.Row) (*types.WorkflowVersion, error) {
+	var ver types.WorkflowVersion
+	var defJSON, changeLog, createdBy, grayCfg sql.NullString
+
+	err := row.Scan(
+		&ver.ID, &ver.WorkflowID, &ver.Version,
+		&defJSON, &changeLog, &createdBy, &ver.CreatedAt, &ver.IsCurrent, &grayCfg,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("workflow version not found")
+		}
+		return nil, wrapDBErr(err, "scanWorkflowVersion")
+	}
+	if defJSON.Valid && defJSON.String != "" {
+		ver.Definition = &types.WorkflowDef{}
+		_ = json.Unmarshal([]byte(defJSON.String), ver.Definition)
+	}
+	if changeLog.Valid {
+		ver.ChangeLog = changeLog.String
+	}
+	if createdBy.Valid {
+		ver.CreatedBy = createdBy.String
+	}
+	if grayCfg.Valid && grayCfg.String != "" {
+		ver.GrayConfig = &types.GrayReleaseConfig{}
+		_ = json.Unmarshal([]byte(grayCfg.String), ver.GrayConfig)
+	}
+	return &ver, nil
+}
+
+func scanWorkflowVersionRow(rows *sql.Rows) (*types.WorkflowVersion, error) {
+	var ver types.WorkflowVersion
+	var defJSON, changeLog, createdBy, grayCfg sql.NullString
+
+	err := rows.Scan(
+		&ver.ID, &ver.WorkflowID, &ver.Version,
+		&defJSON, &changeLog, &createdBy, &ver.CreatedAt, &ver.IsCurrent, &grayCfg,
+	)
+	if err != nil {
+		return nil, wrapDBErr(err, "scanWorkflowVersionRow")
+	}
+	if defJSON.Valid && defJSON.String != "" {
+		ver.Definition = &types.WorkflowDef{}
+		_ = json.Unmarshal([]byte(defJSON.String), ver.Definition)
+	}
+	if changeLog.Valid {
+		ver.ChangeLog = changeLog.String
+	}
+	if createdBy.Valid {
+		ver.CreatedBy = createdBy.String
+	}
+	if grayCfg.Valid && grayCfg.String != "" {
+		ver.GrayConfig = &types.GrayReleaseConfig{}
+		_ = json.Unmarshal([]byte(grayCfg.String), ver.GrayConfig)
+	}
+	return &ver, nil
+}
+
+func scanDeadLetterTask(row *sql.Row) (*types.DeadLetterTask, error) {
+	var t types.DeadLetterTask
+	var workerID, workerIP, errCode, taskDataJSON sql.NullString
+	var lastResendAt sql.NullTime
+
+	err := row.Scan(
+		&t.ID, &t.InstanceID, &t.NodeID,
+		&workerID, &workerIP, &t.Error, &errCode,
+		&t.RetryCount, &taskDataJSON, &t.CreatedAt, &t.ResendCount, &lastResendAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("dead letter task not found")
+		}
+		return nil, wrapDBErr(err, "scanDeadLetterTask")
+	}
+	if workerID.Valid {
+		t.WorkerID = workerID.String
+	}
+	if workerIP.Valid {
+		t.WorkerIP = workerIP.String
+	}
+	if errCode.Valid {
+		t.ErrorCode = errCode.String
+	}
+	if taskDataJSON.Valid && taskDataJSON.String != "" {
+		_ = json.Unmarshal([]byte(taskDataJSON.String), &t.TaskData)
+	}
+	if lastResendAt.Valid {
+		t.LastResendAt = &lastResendAt.Time
+	}
+	return &t, nil
+}
+
+func scanDeadLetterTaskRow(rows *sql.Rows) (*types.DeadLetterTask, error) {
+	var t types.DeadLetterTask
+	var workerID, workerIP, errCode, taskDataJSON sql.NullString
+	var lastResendAt sql.NullTime
+
+	err := rows.Scan(
+		&t.ID, &t.InstanceID, &t.NodeID,
+		&workerID, &workerIP, &t.Error, &errCode,
+		&t.RetryCount, &taskDataJSON, &t.CreatedAt, &t.ResendCount, &lastResendAt,
+	)
+	if err != nil {
+		return nil, wrapDBErr(err, "scanDeadLetterTaskRow")
+	}
+	if workerID.Valid {
+		t.WorkerID = workerID.String
+	}
+	if workerIP.Valid {
+		t.WorkerIP = workerIP.String
+	}
+	if errCode.Valid {
+		t.ErrorCode = errCode.String
+	}
+	if taskDataJSON.Valid && taskDataJSON.String != "" {
+		_ = json.Unmarshal([]byte(taskDataJSON.String), &t.TaskData)
+	}
+	if lastResendAt.Valid {
+		t.LastResendAt = &lastResendAt.Time
+	}
+	return &t, nil
+}

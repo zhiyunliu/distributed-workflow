@@ -71,6 +71,10 @@ type ContextManager interface {
 	UpdateContext(instanceID string, data map[string]interface{}) error
 	// DeleteContext 删除流程上下文
 	DeleteContext(instanceID string) error
+	// SaveSnapshot 保存上下文快照（用于暂停/恢复）（D2新增）
+	SaveSnapshot(instanceID string) (snapshotID string, err error)
+	// RestoreSnapshot 恢复上下文快照（D2新增）
+	RestoreSnapshot(instanceID string, snapshotID string) error
 }
 
 // WorkflowLoader 工作流加载器接口，支持从不同数据源加载工作流定义
@@ -83,6 +87,66 @@ type WorkflowLoader interface {
 
 // ErrorHandler 统一错误处理器接口
 type ErrorHandler interface {
-	// HandleError 处理错误，metadata 包含 instance_id、node_id、worker_id 等关键字段
-	HandleError(err error, metadata map[string]interface{})
+	// HandleError 判断是否需要重试，超限则入死信队列
+	HandleError(instanceID, nodeID, workerID, workerIP string, errMsg, errCode string, retryCount int, policy *types.RetryPolicy, taskData map[string]interface{}) error
+	// MoveToDeadLetter 直接将任务移入死信队列
+	MoveToDeadLetter(instanceID, nodeID, workerID, workerIP, errMsg, errCode string, retryCount int, taskData map[string]interface{}) error
+	// ResendDeadLetterTask 重发死信任务
+	ResendDeadLetterTask(taskID string) error
+	// ListDeadLetterTasks 列举实例的死信任务
+	ListDeadLetterTasks(instanceID string) ([]*types.DeadLetterTask, error)
+}
+
+// WorkflowVersionManager 流程版本管理器接口（D2新增）
+type WorkflowVersionManager interface {
+	// CreateVersion 创建新版本
+	CreateVersion(workflowID string, def *types.WorkflowDef, changeLog string, createdBy string) (*types.WorkflowVersion, error)
+	// GetVersion 获取指定版本
+	GetVersion(workflowID string, version int) (*types.WorkflowVersion, error)
+	// GetCurrentVersion 获取当前生效版本
+	GetCurrentVersion(workflowID string) (*types.WorkflowVersion, error)
+	// ListVersions 列表所有版本
+	ListVersions(workflowID string) ([]*types.WorkflowVersion, error)
+	// SetCurrentVersion 设置当前生效版本
+	SetCurrentVersion(workflowID string, version int) error
+	// SelectVersionForInstance 为新实例选择版本（考虑灰度配置）
+	SelectVersionForInstance(workflowID string, tenantID string) (int, error)
+}
+
+// LifecycleManager 流程生命周期管理器接口（D2新增）
+// 负责暂停、恢复、取消、重试等生命周期操作的状态机验证和协调
+type LifecycleManager interface {
+	// Pause 暂停实例
+	Pause(instanceID string, operator string) error
+	// Resume 恢复实例
+	Resume(instanceID string, operator string) error
+	// Cancel 取消实例
+	Cancel(instanceID string, operator string) error
+	// Retry 重试实例
+	Retry(instanceID string, operator string) error
+	// RetryNode 重试单节点
+	RetryNode(instanceID string, nodeID string, operator string) error
+}
+
+// SubflowManager 子流程管理器接口（D2新增）
+type SubflowManager interface {
+	// TriggerSubflow 触发子流程
+	TriggerSubflow(parentInstanceID string, parentNodeID string, subflowID string, inputData map[string]interface{}, mode types.SubflowCallMode) (string, error)
+	// OnSubflowComplete 子流程完成回调
+	OnSubflowComplete(subflowInstanceID string, success bool, outputData map[string]interface{}) error
+	// GetSubflowDepth 获取子流程嵌套深度
+	GetSubflowDepth(instanceID string) (int, error)
+}
+
+// FailoverManager 故障转移管理器接口（D2新增）
+// 负责 Worker 健康检湋和任务故障转移
+type FailoverManager interface {
+	// StartHealthCheckLoop 启动健康检查循环（每 10s一次）
+	StartHealthCheckLoop()
+	// StopHealthCheckLoop 停止健康检查循环
+	StopHealthCheckLoop()
+	// HealthCheckWorker 检查单个 Worker 健康状态
+	HealthCheckWorker(workerID string) (bool, error)
+	// FailoverWorker 执行 Worker 故障转移
+	FailoverWorker(workerID string) error
 }

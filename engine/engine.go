@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/redis/go-redis/v9"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc"
 
@@ -27,32 +29,43 @@ type Engine struct {
 	workerMgr  interfaces.WorkerManagerService
 	state      *InstanceStateServiceImpl
 	engineSrv  *EngineServer
+	failover   interfaces.FailoverManager
 }
 
 // New 创建引擎实例
 // repo: SQL Server 存储
-// redis: Redis 存储
+// redisRepo: Redis 存储（分布式锁）
+// redisClient: Redis 客户端（上下文快照 + failover 锁）
 func New(
 	cfg Config,
 	repo interfaces.WorkflowRepository,
 	redis interfaces.RedisRepository,
+	redisClient *redis.Client,
 ) *Engine {
-	// Worker gRPC 连接池
+	logger := log.Logger
+
+	// Worker gRPC 客户端
 	workerClient := rpc.NewWorkerClient()
 
 	// 依次创建各服务（注意循环依赖解耦）
-	workerMgr := NewWorkerManagerService(workerClient)
+	workerMgrImpl := NewWorkerManagerService(workerClient).(*WorkerManagerServiceImpl)
 
 	stateImpl := NewInstanceStateService(repo)
 
-	sched := NewSchedulerService(repo, stateImpl, workerMgr, redis)
+	sched := NewSchedulerService(repo, stateImpl, workerMgrImpl, redis)
 
 	// 注入调度器（解决循环依赖）
 	stateImpl.SetScheduler(sched)
 
-	svc := NewWorkflowService(repo, sched, stateImpl)
+	// D2 新增组件
+	versionMgr := NewVersionManager(repo)
+	lifecycleMgr := NewLifecycleManager(repo, stateImpl)
 
-	engineSrv := NewEngineServer(workerMgr, stateImpl)
+	svc := NewWorkflowService(repo, sched, stateImpl, versionMgr, lifecycleMgr)
+
+	failoverMgr := NewFailoverManager(workerMgrImpl, repo, stateImpl, workerClient, redisClient, logger)
+
+	engineSrv := NewEngineServer(workerMgrImpl, stateImpl)
 
 	grpcServer := grpc.NewServer()
 	engineSrv.RegisterServer(grpcServer)
@@ -62,9 +75,10 @@ func New(
 		grpcServer: grpcServer,
 		svc:        svc,
 		sched:      sched,
-		workerMgr:  workerMgr,
+		workerMgr:  workerMgrImpl,
 		state:      stateImpl,
 		engineSrv:  engineSrv,
+		failover:   failoverMgr,
 	}
 }
 
@@ -78,7 +92,7 @@ func (e *Engine) SchedulerService() interfaces.SchedulerService {
 	return e.sched
 }
 
-// Start 启动引擎：监听 gRPC 端口 + 恢复未完成实例
+// Start 启动引擎：监听 gRPC 端口 + 恢复未完成实例 + 启动健康检查
 func (e *Engine) Start() error {
 	lis, err := net.Listen("tcp", e.cfg.GRPCAddr)
 	if err != nil {
@@ -90,6 +104,9 @@ func (e *Engine) Start() error {
 	if err := e.sched.RecoverUnfinishedInstances(); err != nil {
 		log.Error().Err(err).Msg("recover unfinished instances failed")
 	}
+
+	// 启动 Worker 健康检查循环
+	e.failover.StartHealthCheckLoop()
 
 	log.Info().Str("addr", e.cfg.GRPCAddr).Msg("engine gRPC server starting")
 	go func() {
@@ -103,5 +120,9 @@ func (e *Engine) Start() error {
 // Stop 优雅停止引擎
 func (e *Engine) Stop() {
 	log.Info().Msg("engine stopping")
+	e.failover.StopHealthCheckLoop()
 	e.grpcServer.GracefulStop()
 }
+
+// suppress unused import warning
+var _ zerolog.Logger

@@ -139,3 +139,103 @@ func (m *WorkerManagerServiceImpl) UpdateWorkerLoad(workerID string, nodeType st
 	}
 	return nil
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D2 新增方法
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GetAllWorkers 获取所有 Worker（包括 offline）
+func (m *WorkerManagerServiceImpl) GetAllWorkers() []*types.NodeWorkerInfo {
+	var list []*types.NodeWorkerInfo
+	m.workers.Range(func(_, val interface{}) bool {
+		list = append(list, val.(*types.NodeWorkerInfo))
+		return true
+	})
+	return list
+}
+
+// GetWorkerInfo 获取单个 Worker 信息
+func (m *WorkerManagerServiceImpl) GetWorkerInfo(workerID string) (*types.NodeWorkerInfo, error) {
+	val, ok := m.workers.Load(workerID)
+	if !ok {
+		return nil, fmt.Errorf("worker '%s' not found", workerID)
+	}
+	return val.(*types.NodeWorkerInfo), nil
+}
+
+// UpdateWorkerInfo 更新 Worker 信息（健康状态、失联计数等）
+func (m *WorkerManagerServiceImpl) UpdateWorkerInfo(info *types.NodeWorkerInfo) error {
+	m.workers.Store(info.ID, info)
+	return nil
+}
+
+// CheckWorkerHealth 主动对指定 Worker 发起健康检查
+func (m *WorkerManagerServiceImpl) CheckWorkerHealth(workerID string) error {
+	val, ok := m.workers.Load(workerID)
+	if !ok {
+		return fmt.Errorf("worker '%s' not found", workerID)
+	}
+	w := val.(*types.NodeWorkerInfo)
+	if w.Status == types.WorkerStatusOffline {
+		return fmt.Errorf("worker '%s' is offline", workerID)
+	}
+	healthy := m.workerPool.HealthCheck(w.Address, workerID)
+	if !healthy {
+		w.FailedHeartbeatCount++
+		if w.FailedHeartbeatCount >= offlineThreshold {
+			w.HealthStatus = types.WorkerHealthStatusUnhealthy
+			w.Status = types.WorkerStatusOffline
+		} else if w.FailedHeartbeatCount >= unhealthyThreshold {
+			w.HealthStatus = types.WorkerHealthStatusUnhealthy
+		}
+		m.workers.Store(workerID, w)
+		return fmt.Errorf("worker '%s' health check failed (%d consecutive failures)", workerID, w.FailedHeartbeatCount)
+	}
+	w.HealthStatus = types.WorkerHealthStatusHealthy
+	w.FailedHeartbeatCount = 0
+	m.workers.Store(workerID, w)
+	return nil
+}
+
+// GetUnhealthyWorkers 获取所有不健康的 Worker
+func (m *WorkerManagerServiceImpl) GetUnhealthyWorkers() []*types.NodeWorkerInfo {
+	var list []*types.NodeWorkerInfo
+	m.workers.Range(func(_, val interface{}) bool {
+		w := val.(*types.NodeWorkerInfo)
+		if w.HealthStatus == types.WorkerHealthStatusUnhealthy {
+			list = append(list, w)
+		}
+		return true
+	})
+	return list
+}
+
+// FailoverWorker 触发 Worker 故障转移（标记 offline + 重置任务）
+func (m *WorkerManagerServiceImpl) FailoverWorker(workerID string) error {
+	val, ok := m.workers.Load(workerID)
+	if !ok {
+		return fmt.Errorf("worker '%s' not found", workerID)
+	}
+	w := val.(*types.NodeWorkerInfo)
+	w.Status = types.WorkerStatusOffline
+	m.workers.Store(workerID, w)
+	log.Warn().Str("worker_id", workerID).Msg("worker failover triggered")
+	return nil
+}
+
+// CleanupOrphanTasks 清理孤儿任务（Worker 已离线但节点仍处于 running 状态）
+func (m *WorkerManagerServiceImpl) CleanupOrphanTasks() error {
+	offlineWorkers := make(map[string]bool)
+	m.workers.Range(func(_, val interface{}) bool {
+		w := val.(*types.NodeWorkerInfo)
+		if w.Status == types.WorkerStatusOffline {
+			offlineWorkers[w.ID] = true
+		}
+		return true
+	})
+	if len(offlineWorkers) == 0 {
+		return nil
+	}
+	log.Info().Int("offline_count", len(offlineWorkers)).Msg("cleanup orphan tasks: offline workers found")
+	return nil
+}

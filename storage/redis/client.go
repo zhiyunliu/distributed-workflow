@@ -61,6 +61,11 @@ func (c *Client) Close() error {
 	return c.rdb.Close()
 }
 
+// RawClient 返回底层 go-redis 客户端（供需要直接操作 Redis 的组件使用）
+func (c *Client) RawClient() *goredis.Client {
+	return c.rdb
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // RedisRepository 接口实现
 // ─────────────────────────────────────────────────────────────────────────────

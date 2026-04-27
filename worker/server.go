@@ -71,3 +71,25 @@ func (s *WorkerServer) CancelTask(_ context.Context, req *proto.CancelTaskReques
 	}
 	return &proto.CancelTaskResponse{Code: 0, Message: "ok", Success: true}, nil
 }
+
+// PauseTask 暂停正在执行的任务（D2 新增）
+func (s *WorkerServer) PauseTask(_ context.Context, req *proto.PauseTaskRequest) (*proto.PauseTaskResponse, error) {
+	if err := s.taskMgr.Cancel(req.WorkflowInstanceId, req.WorkflowNodeId); err != nil {
+		log.Warn().Err(err).
+			Str("instance_id", req.WorkflowInstanceId).
+			Str("node_id", req.WorkflowNodeId).
+			Msg("pause task failed")
+		return &proto.PauseTaskResponse{Code: 1, Message: err.Error(), Success: false}, nil
+	}
+	log.Info().
+		Str("instance_id", req.WorkflowInstanceId).
+		Str("node_id", req.WorkflowNodeId).
+		Msg("task paused")
+	return &proto.PauseTaskResponse{Code: 0, Message: "ok", Success: true}, nil
+}
+
+// HealthCheck Worker 健康检查（D2 新增）
+func (s *WorkerServer) HealthCheck(_ context.Context, req *proto.HealthCheckRequest) (*proto.HealthCheckResponse, error) {
+	log.Debug().Str("worker_id", req.WorkerId).Msg("health check received")
+	return &proto.HealthCheckResponse{Code: 0, Message: "ok", Success: true}, nil
+}
