@@ -1,0 +1,98 @@
+version: "3.9"
+
+services:
+  # ── SQL Server ────────────────────────────────────────────────────────────
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: workflow-sqlserver
+    restart: unless-stopped
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "${MSSQL_SA_PASSWORD:-Workflow@2024}"
+      MSSQL_PID: Developer
+    ports:
+      - "1433:1433"
+    volumes:
+      - sqlserver_data:/var/opt/mssql
+    healthcheck:
+      test: ["/opt/mssql-tools/bin/sqlcmd", "-S", "localhost", "-U", "sa",
+             "-P", "${MSSQL_SA_PASSWORD:-Workflow@2024}", "-Q", "SELECT 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - workflow-net
+
+  # ── Redis（审批/缓存）────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: workflow-redis
+    restart: unless-stopped
+    command: redis-server --requirepass "${REDIS_PASSWORD:-Workflow@2024}" --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-Workflow@2024}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - workflow-net
+
+  # ── 后端服务 ──────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: workflow-backend
+    restart: unless-stopped
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      SERVER_PORT: "8080"
+      DB_DSN: "sqlserver://sa:${MSSQL_SA_PASSWORD:-Workflow@2024}@sqlserver:1433?database=workflow"
+      REDIS_ADDR: "redis:6379"
+      REDIS_PASSWORD: "${REDIS_PASSWORD:-Workflow@2024}"
+      JWT_SECRET: "${JWT_SECRET:-distributed-workflow-change-this-secret-in-prod}"
+      GIN_MODE: release
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config:/app/config:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks:
+      - workflow-net
+
+  # ── 前端（Nginx + Vue3 静态文件）────────────────────────────────────────
+  frontend:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: workflow-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "80:80"
+    networks:
+      - workflow-net
+
+volumes:
+  sqlserver_data:
+  redis_data:
+
+networks:
+  workflow-net:
+    driver: bridge

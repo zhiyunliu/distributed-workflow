@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
 	"github.com/zhiyunliu/distributed-workflow/interfaces"
+	"github.com/zhiyunliu/distributed-workflow/sysmanager"
 	"github.com/zhiyunliu/distributed-workflow/types"
 )
 
@@ -17,8 +18,11 @@ type Server struct {
 	approvalSvc interfaces.ApprovalService
 	auditSvc    interfaces.AuditLogService
 	endpointSvc interfaces.EndpointManagerService
-	engine      *gin.Engine
-	server      *http.Server
+	// D4: 系统管理
+	sysMgr    sysmanager.Manager
+	jwtSecret string
+	engine    *gin.Engine
+	server    *http.Server
 }
 
 // NewServer 创建 HTTP 服务器
