@@ -13,11 +13,11 @@ import (
 
 // approvalServiceImpl 人工审批服务实现
 type approvalServiceImpl struct {
-	repo        interfaces.WorkflowRepository
+	repo         interfaces.WorkflowRepository
 	stateService interfaces.InstanceStateService
-	auditMgr    interfaces.AuditLogManager
-	callbackMgr *callbackManagerImpl
-	sched       interfaces.SchedulerService
+	auditMgr     interfaces.AuditLogManager
+	callbackMgr  *callbackManagerImpl
+	sched        interfaces.SchedulerService
 }
 
 // NewApprovalService 创建审批服务

@@ -13,11 +13,11 @@ import (
 
 // auditLogManagerImpl 审计日志管理器，使用带缓冲 channel 异步批量写入
 type auditLogManagerImpl struct {
-	repo     interfaces.WorkflowRepository
-	ch       chan *types.WorkflowAuditLog
-	stopCh   chan struct{}
-	doneCh   chan struct{}
-	batchSize int
+	repo          interfaces.WorkflowRepository
+	ch            chan *types.WorkflowAuditLog
+	stopCh        chan struct{}
+	doneCh        chan struct{}
+	batchSize     int
 	flushInterval time.Duration
 }
 
