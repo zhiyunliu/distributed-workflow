@@ -1,6 +1,7 @@
 package interfaces
 
 import (
+	"context"
 	"time"
 
 	"github.com/zhiyunliu/distributed-workflow/types"
@@ -164,6 +165,9 @@ type AuditLogManager interface {
 	GetLogByID(logID string) (*types.WorkflowAuditLog, error)
 	// ArchiveLogs 归档指定时间之前的审计日志
 	ArchiveLogs(beforeTime time.Time) error
+	// VerifyLogChain 验证日志链完整性（管理员工具）
+	// 验证指定时间范围内相邻日志的哈希链连续性，任何不匹配则返回 false（D6新增）
+	VerifyLogChain(ctx context.Context, startTime, endTime time.Time) (bool, error)
 	// Start 启动异步写入协程
 	Start()
 	// Stop 停止并 flush 剩余日志

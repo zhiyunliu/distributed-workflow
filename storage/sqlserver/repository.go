@@ -68,6 +68,11 @@ func NewRepository(cfg Config) (*Repository, error) {
 	return &Repository{db: db}, nil
 }
 
+// DB 返回底层数据库连接，供 D6 各子仓库复用
+func (r *Repository) DB() *sql.DB {
+	return r.db
+}
+
 // Close 关闭数据库连接池
 func (r *Repository) Close() error {
 	return r.db.Close()
@@ -1265,10 +1270,10 @@ func (r *Repository) CreateAuditLog(auditLog *types.WorkflowAuditLog) error {
 	const q = `
 INSERT INTO workflow_instance_logs
 (id, instance_id, node_id, workflow_id, endpoint_id, operation_type,
- operator, operate_ip, operate_time, before_data, after_data, detail, trace_id)
+ operator, operate_ip, operate_time, before_data, after_data, detail, trace_id, hash)
 VALUES
 (@id, @instanceId, @nodeId, @workflowId, @endpointId, @operationType,
- @operator, @operateIp, @operateTime, @beforeData, @afterData, @detail, @traceId)`
+ @operator, @operateIp, @operateTime, @beforeData, @afterData, @detail, @traceId, @hash)`
 
 	_, err := r.db.ExecContext(ctx, q,
 		sql.Named("id", auditLog.ID),
@@ -1284,6 +1289,7 @@ VALUES
 		sql.Named("afterData", nullStr(string(afterJSON))),
 		sql.Named("detail", auditLog.Detail),
 		sql.Named("traceId", auditLog.TraceID),
+		sql.Named("hash", auditLog.Hash),
 	)
 	return wrapDBErr(err, "CreateAuditLog")
 }
@@ -1353,7 +1359,7 @@ func (r *Repository) QueryAuditLogs(filter types.AuditLogFilter, page, pageSize 
 	offset := (page - 1) * pageSize
 
 	dataQ := "SELECT id, instance_id, node_id, workflow_id, endpoint_id, operation_type, " +
-		"operator, operate_ip, operate_time, before_data, after_data, detail, trace_id " +
+		"operator, operate_ip, operate_time, before_data, after_data, detail, trace_id, hash " +
 		"FROM workflow_instance_logs" + where +
 		" ORDER BY operate_time DESC OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY"
 	args = append(args, sql.Named("offset", offset), sql.Named("pageSize", pageSize))
@@ -1382,11 +1388,34 @@ func (r *Repository) GetAuditLog(logID string) (*types.WorkflowAuditLog, error) 
 
 	const q = `
 SELECT id, instance_id, node_id, workflow_id, endpoint_id, operation_type,
-       operator, operate_ip, operate_time, before_data, after_data, detail, trace_id
+       operator, operate_ip, operate_time, before_data, after_data, detail, trace_id, hash
 FROM workflow_instance_logs WHERE id = @id`
 
 	row := r.db.QueryRowContext(ctx, q, sql.Named("id", logID))
 	return scanAuditLog(row)
+}
+
+// GetLatestAuditLog 获取最新一条审计日志（用于哈希链初始化）
+func (r *Repository) GetLatestAuditLog() (*types.WorkflowAuditLog, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	const q = `
+SELECT TOP 1 id, instance_id, node_id, workflow_id, endpoint_id, operation_type,
+       operator, operate_ip, operate_time, before_data, after_data, detail, trace_id, hash
+FROM workflow_instance_logs
+ORDER BY operate_time DESC`
+
+	row := r.db.QueryRowContext(ctx, q)
+	l, err := scanAuditLog(row)
+	if err != nil {
+		// 无记录时返回 nil 而不是错误
+		if err.Error() == "audit log not found" {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return l, nil
 }
 
 // ArchiveAuditLogs 归档（物理删除）指定时间之前的审计日志
@@ -1685,12 +1714,12 @@ func nullStr(s string) sql.NullString {
 
 func scanAuditLog(row *sql.Row) (*types.WorkflowAuditLog, error) {
 	var l types.WorkflowAuditLog
-	var beforeJSON, afterJSON sql.NullString
+	var beforeJSON, afterJSON, hash sql.NullString
 
 	err := row.Scan(
 		&l.ID, &l.InstanceID, &l.NodeID, &l.WorkflowID, &l.EndpointID,
 		&l.OperationType, &l.Operator, &l.OperateIP, &l.OperateTime,
-		&beforeJSON, &afterJSON, &l.Detail, &l.TraceID,
+		&beforeJSON, &afterJSON, &l.Detail, &l.TraceID, &hash,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -1704,17 +1733,20 @@ func scanAuditLog(row *sql.Row) (*types.WorkflowAuditLog, error) {
 	if afterJSON.Valid && afterJSON.String != "" {
 		_ = json.Unmarshal([]byte(afterJSON.String), &l.AfterData)
 	}
+	if hash.Valid {
+		l.Hash = hash.String
+	}
 	return &l, nil
 }
 
 func scanAuditLogRow(rows *sql.Rows) (*types.WorkflowAuditLog, error) {
 	var l types.WorkflowAuditLog
-	var beforeJSON, afterJSON sql.NullString
+	var beforeJSON, afterJSON, hash sql.NullString
 
 	err := rows.Scan(
 		&l.ID, &l.InstanceID, &l.NodeID, &l.WorkflowID, &l.EndpointID,
 		&l.OperationType, &l.Operator, &l.OperateIP, &l.OperateTime,
-		&beforeJSON, &afterJSON, &l.Detail, &l.TraceID,
+		&beforeJSON, &afterJSON, &l.Detail, &l.TraceID, &hash,
 	)
 	if err != nil {
 		return nil, wrapDBErr(err, "scanAuditLogRow")
@@ -1724,6 +1756,9 @@ func scanAuditLogRow(rows *sql.Rows) (*types.WorkflowAuditLog, error) {
 	}
 	if afterJSON.Valid && afterJSON.String != "" {
 		_ = json.Unmarshal([]byte(afterJSON.String), &l.AfterData)
+	}
+	if hash.Valid {
+		l.Hash = hash.String
 	}
 	return &l, nil
 }

@@ -648,6 +648,7 @@ type WorkflowAuditLog struct {
 	AfterData     map[string]interface{} `json:"afterData"`
 	Detail        string                 `json:"detail"`
 	TraceID       string                 `json:"traceId"`
+	Hash          string                 `json:"hash"` // 防篡改哈希链（D6新增）
 }
 
 // AuditLogFilter 审计日志查询过滤器（D3新增）

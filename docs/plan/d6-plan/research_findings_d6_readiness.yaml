@@ -1,0 +1,828 @@
+plan_id: d6-plan
+objective: >
+  深度研究 D1-D5 阶段已实现功能，梳理后端核心接口、前端页面/API、数据库表结构，
+  识别 D6 阶段需新增或扩展的关键点，为 D6 实施提供完整基线。
+focus_area: d6_readiness
+created_at: "2026-04-28"
+created_by: RESEARCHER
+status: completed
+
+tldr: |
+  - D1-D5 已完整实现：流程定义CRUD/版本管理、DAG调度、Worker分发、人工审批、审计日志、
+    端点管理（HTTP+定时）、系统用户/角色/菜单/字典、流程模板市场，共 15 张业务表
+  - 后端核心接口 14 个（interfaces/ + sysmanager/），Repository 接口 2 个（SQL+Redis）
+  - 前端已有 12 个页面、11 个 API 封装文件
+  - D6 需全新引入：表单引擎（0 代码基础）、高级审批扩展（6 种新场景）、等保合规层、
+    BI 数据分析、钉钉/企业微信适配、Golang 插件化框架
+  - 关键架构约束：绝对禁止修改 D1-D5 已发布接口，所有 D6 能力均为增量扩展
+
+research_metadata:
+  methodology: "read_file + grep_search + list_dir 三遍扫描，优先核心接口文件，次之 schema/types，最后前端"
+  scope: "全量 Go 后端 interfaces/、engine/、storage/、sysmodel/、sysmanager/、types/；前端 web/src/api/ + views/；全部 schema*.sql"
+  confidence: high
+  coverage: 95
+  decision_blockers: 3
+  research_blockers: 0
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 1. 后端核心接口清单
+# ═══════════════════════════════════════════════════════════════════════════════
+files_analyzed:
+  - file: interfaces/services.go
+    path: interfaces/services.go
+    purpose: 所有业务服务接口定义（Engine 面向上层的服务契约）
+    key_elements:
+      - element: WorkflowService
+        type: interface
+        location: "interfaces/services.go:11"
+        description: >
+          工作流定义管理 + 实例生命周期。
+          核心方法：CreateWorkflow、GetWorkflow、UpdateWorkflow、DeleteWorkflow、
+          StartWorkflow、GetWorkflowInstance、
+          D2扩展：GetWorkflowVersion、ListWorkflowVersions、RollbackWorkflow、UpdateGrayConfig、
+          PauseInstance、ResumeInstance、CancelInstance、RetryInstance、RetryNode、
+          ListWorkflowInstances、ListDeadLetterTasks
+        language: go
+      - element: SchedulerService
+        type: interface
+        location: "interfaces/services.go:55"
+        description: >
+          DAG 调度大脑。
+          核心方法：StartExecution、ScheduleNextNodes、HandleNodeCompleted、RecoverUnfinishedInstances、
+          D2扩展：PauseExecution、ResumeExecution、CancelExecution、RetryExecution、
+          RetrySingleNode、HandleWorkerFailure、ProcessRetryQueue
+        language: go
+      - element: InstanceStateService
+        type: interface
+        location: "interfaces/services.go:80"
+        description: >
+          实例/节点状态持久化。
+          核心方法：CreateInstance、UpdateInstanceStatus、CreateNodeState、UpdateNodeState、
+          GetNodeState、GetInstanceNodeStates、ReportTaskResult、
+          D2扩展：ValidateStateTransition、BatchUpdateNodeStatus、UpdateRetryState、GetFailedNodes、GetAssignedNodesByWorker、
+          D3扩展：UpdateNodeApprovalState、GetPendingApprovalTasks、AddApprovalRecord、GetApprovalRecords
+        language: go
+      - element: WorkerManagerService
+        type: interface
+        location: "interfaces/services.go:115"
+        description: >
+          Worker 服务发现 + 负载均衡。
+          核心方法：GetOnlineWorkers、GetWorkersByNodeType、SelectBestWorker、AssignTask、
+          HandleWorkerOffline、UpdateWorkerLoad、RegisterWorker、UpdateHeartbeat、
+          D2扩展：CheckWorkerHealth、GetUnhealthyWorkers、FailoverWorker、CleanupOrphanTasks
+        language: go
+      - element: HTTPEndpointService
+        type: interface
+        location: "interfaces/services.go:145"
+        description: "HTTP触发端点。方法：Start、Stop、RegisterWorkflowEndpoint"
+        language: go
+      - element: ApprovalService
+        type: interface
+        location: "interfaces/services.go:155"
+        description: >
+          D3 人工审批服务（基础版）。
+          方法：Approve、Reject、GetPendingTasks、GetApprovalRecords。
+          【D6 需扩展】：AddSign、Transfer、Delegate、Escalate、RollbackTo、Countersign
+        language: go
+      - element: AuditLogService
+        type: interface
+        location: "interfaces/services.go:165"
+        description: "D3 审计日志服务。方法：Record、QueryLogs、ArchiveLogs"
+        language: go
+      - element: EndpointManagerService
+        type: interface
+        location: "interfaces/services.go:175"
+        description: >
+          D3 端点管理（HTTP+定时）。
+          方法：CreateEndpoint、UpdateEndpoint、GetEndpoint、ListEndpoints、StartEndpoint、StopEndpoint、DeleteEndpoint
+        language: go
+
+  - file: interfaces/components.go
+    path: interfaces/components.go
+    purpose: 引擎内部组件接口（执行器、锁、队列、上下文、版本管理等）
+    key_elements:
+      - element: NodeExecutor
+        type: interface
+        location: "interfaces/components.go:11"
+        description: "节点执行器基础接口。方法：Type() string、Execute(config,input,ctx)"
+        language: go
+      - element: NodeExecutorContainer
+        type: interface
+        location: "interfaces/components.go:25"
+        description: "执行器容器。方法：Register、Get、List"
+        language: go
+      - element: TaskExecutionManager
+        type: interface
+        location: "interfaces/components.go:35"
+        description: "任务执行管理。方法：Submit、Cancel、GetCurrentLoad"
+        language: go
+      - element: DistributedLock
+        type: interface
+        location: "interfaces/components.go:44"
+        description: "分布式锁。方法：Lock、Unlock、TryLockWithTimeout"
+        language: go
+      - element: ContextManager
+        type: interface
+        location: "interfaces/components.go:60"
+        description: "流程上下文管理。方法：CreateContext、GetContext、UpdateContext、DeleteContext、SaveSnapshot、RestoreSnapshot"
+        language: go
+      - element: ErrorHandler
+        type: interface
+        location: "interfaces/components.go:80"
+        description: "错误处理+死信队列。方法：HandleError、MoveToDeadLetter、ResendDeadLetterTask、ListDeadLetterTasks"
+        language: go
+      - element: WorkflowVersionManager
+        type: interface
+        location: "interfaces/components.go:95"
+        description: "D2 版本管理。方法：CreateVersion、GetVersion、GetCurrentVersion、ListVersions、SetCurrentVersion、SelectVersionForInstance"
+        language: go
+      - element: LifecycleManager
+        type: interface
+        location: "interfaces/components.go:108"
+        description: "D2 生命周期管理。方法：Pause、Resume、Cancel、Retry、RetryNode"
+        language: go
+      - element: SubflowManager
+        type: interface
+        location: "interfaces/components.go:118"
+        description: "D2 子流程管理。方法：TriggerSubflow、OnSubflowComplete、GetSubflowDepth"
+        language: go
+      - element: FailoverManager
+        type: interface
+        location: "interfaces/components.go:128"
+        description: "D2 Worker故障转移。方法：StartHealthCheckLoop、StopHealthCheckLoop、HealthCheckWorker、FailoverWorker"
+        language: go
+      - element: AuditLogManager
+        type: interface
+        location: "interfaces/components.go:140"
+        description: "D3 审计日志异步写管理器。方法：RecordLog、BatchRecordLog、QueryLogs、GetLogByID、ArchiveLogs、Start、Stop"
+        language: go
+      - element: CallbackManager
+        type: interface
+        location: "interfaces/components.go:155"
+        description: "D3 节点回调管理器。方法：InvokeCallback、InvokeWebhook"
+        language: go
+
+  - file: interfaces/repository.go
+    path: interfaces/repository.go
+    purpose: 数据持久化接口（SQL Server + Redis）
+    key_elements:
+      - element: WorkflowRepository
+        type: interface
+        location: "interfaces/repository.go:11"
+        description: >
+          SQL Server 持久化全量接口，涵盖：
+          D1：工作流定义CRUD、实例CRUD、节点状态CRUD、上下文CRUD
+          D2：版本管理、死信队列
+          D3：审计日志、审批记录、端点管理
+          D5：流程模板（CreateWorkflowTemplate、UpdateWorkflowTemplate、GetWorkflowTemplate、
+              ListWorkflowTemplates、PublishWorkflowTemplate、IncrementWorkflowTemplateInstallCount、ListWorkflowTemplateCategories）
+        language: go
+      - element: RedisRepository
+        type: interface
+        location: "interfaces/repository.go:155"
+        description: "Redis操作接口：分布式锁(Lock/Unlock/RenewLock)、任务队列(EnqueueTask/DequeueTask/GetQueueLength)、缓存(SetCache/GetCache/DeleteCache)"
+        language: go
+
+  - file: sysmanager/interfaces.go
+    path: sysmanager/interfaces.go
+    purpose: "D4 系统管理抽象层接口（用户/角色/菜单/认证/权限）"
+    key_elements:
+      - element: UserService
+        type: interface
+        location: "sysmanager/interfaces.go:15"
+        description: >
+          用户服务：GetUserByID、GetUserByUsername、ListUsers、CreateUser、UpdateUser、
+          DeleteUser、GetUserRoles、GetUserPermissions、ResetPassword、AssignRoles
+        language: go
+      - element: RoleService
+        type: interface
+        location: "sysmanager/interfaces.go:35"
+        description: >
+          角色服务：GetRoleByID、GetRoleByCode、ListRoles、CreateRole、UpdateRole、
+          DeleteRole、GetRoleMenus、AssignRoleMenus
+        language: go
+      - element: MenuService
+        type: interface
+        location: "sysmanager/interfaces.go:55"
+        description: >
+          菜单服务：GetMenuByID、ListMenus、GetMenuTree、GetUserMenuTree、
+          CreateMenu、UpdateMenu、DeleteMenu
+        language: go
+      - element: AuthService
+        type: interface
+        location: "sysmanager/interfaces.go:70"
+        description: >
+          认证服务：Login、Logout、ValidateToken、RefreshToken、ChangePassword。
+          【D6 需扩展】：MFAVerify、MFASetup、OAuthCallback（钉钉/企微）
+        language: go
+      - element: PermissionService
+        type: interface
+        location: "sysmanager/interfaces.go:85"
+        description: "权限校验：HasPermission、HasAnyPermission、HasAllPermissions、HasRole、HasAnyRole、CheckDataScope"
+        language: go
+
+  - file: types/types.go
+    path: types/types.go
+    purpose: 全量业务类型定义（D1-D5 共 25+ 结构体）
+    key_elements:
+      - element: WorkflowDef
+        type: class
+        location: "types/types.go:180"
+        description: "流程定义。含 Nodes、Connections、StartNodeID、EndNodeID、GlobalRetryPolicy(D2)、Timeout(D2)"
+        language: go
+      - element: WorkflowNode
+        type: class
+        location: "types/types.go:215"
+        description: "节点定义。含 HumanTaskConfig(D3)、CallbackConfig(D3)、SubflowConfig(D2)、RetryPolicy(D2)"
+        language: go
+      - element: WorkflowInstance
+        type: class
+        location: "types/types.go:290"
+        description: "流程实例。含 PauseTime/CancelTime/ParentInstanceID(D2)等运行时字段"
+        language: go
+      - element: WorkflowNodeState
+        type: class
+        location: "types/types.go:330"
+        description: "节点状态。含 ApprovalStatus/CurrentApproverIndex/ApprovalRecords(D3)"
+        language: go
+      - element: HumanTaskConfig
+        type: class
+        location: "types/types.go:540"
+        description: >
+          D3 人工任务配置。含 ApprovalMode(single/or_sign/sequential)、Approvers、
+          TimeoutAction(pass/reject/skip)、RejectAction(terminate/goto)、FormFields。
+          【D6 需扩展】：AddSignConfig、TransferConfig、DelegateConfig、EscalateConfig
+        language: go
+      - element: WorkflowTemplate
+        type: class
+        location: "types/types.go:670"
+        description: "D5 流程模板。含 Status(draft/published/offline)、VisibleScope、InstallCount、StartCount"
+        language: go
+
+  - file: sysmodel/types.go
+    path: sysmodel/types.go
+    purpose: "D4 系统管理数据模型"
+    key_elements:
+      - element: SystemUser
+        type: class
+        location: "sysmodel/types.go:12"
+        description: "系统用户。含 ID/Username/Password/RealName/Email/Phone/Avatar/Status/DeptID"
+        language: go
+      - element: SystemRole
+        type: class
+        location: "sysmodel/types.go:35"
+        description: "系统角色。含 RoleName/RoleCode/DataScope(全量/本部门/个人)"
+        language: go
+      - element: SystemMenu
+        type: class
+        location: "sysmodel/types.go:55"
+        description: "系统菜单树。MenuType(M=目录/C=菜单/F=按钮)"
+        language: go
+      - element: LoginRequest/LoginResponse
+        type: class
+        location: "sysmodel/types.go:80"
+        description: "认证请求/响应。含 GrantType 支持 password/authorization_code/client_credentials"
+        language: go
+      - element: DictionaryItem
+        type: class
+        location: "sysmodel/types.go:110"
+        description: "数据字典项。含 DictType/DictName/DictValue/DictGroup"
+        language: go
+      - element: AuthConfig
+        type: class
+        location: "sysmodel/types.go:130"
+        description: "认证配置。Type(builtin/ldap/oauth2/custom)、Secret、ExpireHours"
+        language: go
+
+  - file: engine/approval_service.go
+    path: engine/approval_service.go
+    purpose: ApprovalService 的 engine 层实现
+    key_elements:
+      - element: approvalServiceImpl
+        type: class
+        location: "engine/approval_service.go:15"
+        description: >
+          依赖：WorkflowRepository、InstanceStateService、AuditLogManager、callbackManagerImpl、SchedulerService（延迟注入解决循环依赖）。
+          实现了 Approve/Reject/GetPendingTasks/GetApprovalRecords。
+          handleApproval 内部完整实现了 or_sign（任意驳回/全部驳回判定）、sequential（顺序推进）、single 三种审批模式。
+          审批通过后调用 sched.HandleNodeCompleted 推进流程。
+        language: go
+    lines: 250
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 2. 前端已有页面与 API 清单
+# ═══════════════════════════════════════════════════════════════════════════════
+frontend_inventory:
+  views:
+    - path: web/src/views/Login.vue
+      description: 登录页
+    - path: web/src/views/workflow/WorkflowList.vue
+      description: 流程定义列表（CRUD + 启用/禁用）
+    - path: web/src/views/workflow/WorkflowDesigner.vue
+      description: 可视化流程设计器（DAG 画布，D5 已完成）
+    - path: web/src/views/instance/InstanceList.vue
+      description: 流程实例列表（分页、状态过滤）
+    - path: web/src/views/instance/InstanceDetail.vue
+      description: 流程实例详情（拓扑图 + 节点状态 + 上下文 + 事件）
+    - path: web/src/views/approval/ApprovalWorkbench.vue
+      description: 审批工作台（待办/历史，approve/reject 操作）
+    - path: web/src/views/audit/AuditLog.vue
+      description: 审计日志查询（过滤 + 分页）
+    - path: web/src/views/endpoint/EndpointList.vue
+      description: 端点管理（HTTP + 定时，CRUD + 启用/禁用 + 测试）
+    - path: web/src/views/template/TemplateMarket.vue
+      description: 流程模板市场（分类浏览 + 一键安装 + 发布）
+    - path: web/src/views/system/UserManage.vue
+      description: 系统用户管理（CRUD + 角色分配）
+    - path: web/src/views/system/RoleManage.vue
+      description: 系统角色管理（CRUD + 菜单权限分配）
+    - path: web/src/views/system/MenuManage.vue
+      description: 系统菜单管理（树型结构 CRUD）
+    - path: web/src/views/system/DictionaryManage.vue
+      description: 数据字典管理（分类管理 + 字典项 CRUD）
+
+  api_files:
+    - file: web/src/api/workflow.ts
+      key_methods:
+        - saveDraft、publish（流程设计器）
+        - getVersions、getVersion、rollback（版本管理）
+        - importDef、exportDef、validate、list（定义管理）
+        - getTopology、getInstanceNodes、getInstanceContext、getInstanceEvents、retryNode（实例）
+    - file: web/src/api/instance.ts
+      key_methods: [list, get, start, cancel, pause, resume]
+    - file: web/src/api/approval.ts
+      key_methods: [todoList, historyList, approve, getPendingTask]
+    - file: web/src/api/audit.ts
+      key_methods: [list]
+    - file: web/src/api/endpoint.ts
+      key_methods: [list, get, create, update, delete, enable, disable, triggerHistory, test, validateCron]
+    - file: web/src/api/template.ts
+      key_methods: [market, categories, detail, install, create, update, publish, importTemplate, exportTemplate]
+    - file: web/src/api/auth.ts
+      key_methods: [login, logout]
+    - file: web/src/api/user.ts
+      key_methods: [CRUD + assignRoles + resetPassword]
+    - file: web/src/api/role.ts
+      key_methods: [CRUD + assignMenus]
+    - file: web/src/api/menu.ts
+      key_methods: [tree, CRUD]
+    - file: web/src/api/dict.ts
+      key_methods: [listByType, CRUD]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 3. 数据库现有表结构摘要
+# ═══════════════════════════════════════════════════════════════════════════════
+database_tables:
+  phase_d1:
+    tables:
+      - name: workflow_defs
+        core_fields: "id(PK VARCHAR64), name, description, latest_version INT, definition(NVARCHAR MAX JSON), created_at, updated_at, created_by, updated_by, disabled BIT"
+      - name: workflow_instances
+        core_fields: "id(PK VARCHAR64), workflow_id(FK), workflow_version INT, status VARCHAR32, start_time, end_time, input_data(JSON), output_data(JSON), created_by, error_message"
+      - name: workflow_node_states
+        core_fields: "id(IDENTITY PK), instance_id(FK), node_id VARCHAR64, status, assigned_to, worker_ip, start_time, end_time, input_data(JSON), output_data(JSON), error_message, retry_count INT"
+        unique_constraint: "(instance_id, node_id)"
+      - name: workflow_instance_context
+        core_fields: "id(IDENTITY PK), instance_id(FK), key VARCHAR255, value(NVARCHAR MAX JSON), created_at, updated_at"
+        unique_constraint: "(instance_id, key)"
+
+  phase_d2:
+    alter_tables:
+      - name: workflow_defs
+        added_fields: "current_version INT DEFAULT 1, global_retry_policy NVARCHAR(MAX), timeout INT DEFAULT 0"
+      - name: workflow_instances
+        added_fields: "pause_time, cancel_time, parent_instance_id VARCHAR64, parent_node_id, is_subflow_instance BIT, pause_node_ids NVARCHAR(MAX), operator VARCHAR64"
+      - name: workflow_node_states
+        added_fields: "next_retry_time DATETIME2, last_retry_time DATETIME2, error_code VARCHAR64, skipped_reason NVARCHAR(MAX)"
+    new_tables:
+      - name: workflow_versions
+        core_fields: "id(IDENTITY PK), workflow_id(FK), version INT, definition(NVARCHAR MAX JSON), change_log, created_by, created_at, is_current BIT, gray_config(JSON)"
+        unique_constraint: "(workflow_id, version)"
+      - name: workflow_dead_letter_tasks
+        core_fields: "id(PK VARCHAR64), instance_id(FK), node_id, worker_id, worker_ip, error_message, error_code, retry_count, task_data(JSON), created_at, resend_count, last_resend_at"
+      - name: workflow_context_snapshots
+        core_fields: "id(PK VARCHAR64), instance_id(FK), context_data(NVARCHAR MAX JSON), created_at"
+
+  phase_d3:
+    alter_tables:
+      - name: workflow_node_states
+        added_fields: "approval_status NVARCHAR32, current_approver_index INT DEFAULT 0"
+    new_tables:
+      - name: workflow_instance_logs
+        core_fields: "id(PK NVARCHAR64), instance_id, node_id, workflow_id, endpoint_id, operation_type, operator, operate_ip, operate_time, before_data(JSON), after_data(JSON), detail, trace_id"
+        indexes: "instance_id, workflow_id, endpoint_id, operator, operate_time, operation_type"
+      - name: workflow_approval_records
+        core_fields: "id(PK NVARCHAR64), instance_id, node_id, approver, action(approve/reject/cancel), comment, form_data(JSON), operate_time, operate_ip"
+        indexes: "instance_id, node_id, approver"
+      - name: workflow_endpoints
+        core_fields: "id(PK NVARCHAR64), name, type(http/schedule), workflow_id, config(JSON), schedule_config(JSON), path, created_by, disabled BIT, created_at, updated_at"
+        indexes: "workflow_id, type, disabled"
+
+  phase_d4:
+    new_tables:
+      - name: sys_user
+        core_fields: "id(BIGINT IDENTITY PK), username(UNIQUE), password(bcrypt hash), real_name, email, phone, avatar, status BIT, dept_id, create_time, update_time, create_by, update_by, deleted BIT"
+      - name: sys_role
+        core_fields: "id(BIGINT IDENTITY PK), role_name, role_code(UNIQUE), description, status BIT, data_scope INT(1=全量/2=本部门/3=个人), create_time, ..., deleted BIT"
+      - name: sys_menu
+        core_fields: "id(BIGINT IDENTITY PK), parent_id, menu_name, menu_type(M/C/F), path, component, perms, icon, sort, visible BIT, is_frame BIT, create_time, deleted BIT"
+      - name: sys_user_role
+        core_fields: "id(BIGINT PK), user_id, role_id"
+        unique_constraint: "(user_id, role_id)"
+      - name: sys_role_menu
+        core_fields: "id(BIGINT PK), role_id, menu_id"
+        unique_constraint: "(role_id, menu_id)"
+      - name: sys_dictionary_info
+        core_fields: "dic_id(BIGINT IDENTITY PK), dict_type VARCHAR128, dict_name NVARCHAR128, dict_value VARCHAR255, dict_group VARCHAR128, sort INT, status BIT, remark, create_time"
+        indexes: "dict_type, dict_group, (dict_type, dict_value)"
+    default_data:
+      - "sys_role: super_admin 超级管理员"
+      - "sys_user: admin 系统管理员（bcrypt密码在启动时初始化）"
+
+  phase_d5:
+    new_tables:
+      - name: workflow_template_categories
+        core_fields: "category_id(BIGINT IDENTITY PK), category_name(UNIQUE VARCHAR64), parent_id, sort, description, created_at, deleted BIT"
+        default_data: "行政审批、运维自动化、研发协同 三个一级分类"
+      - name: workflow_templates
+        core_fields: "template_id(PK VARCHAR64), template_name, category_id, description, workflow_def(NVARCHAR MAX JSON), version, author, tags, icon, status INT(0=草稿/1=已发布/2=已下架), visible_scope INT(1=全公司/2=指定部门/3=指定人员), visible_range(JSON), install_count, start_count, created_at, updated_at, deleted BIT"
+        indexes: "category_id, status, author"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 4. D6 阶段需新增/扩展的关键点识别
+# ═══════════════════════════════════════════════════════════════════════════════
+d6_gaps_and_extensions:
+
+  # ──────────────────────────────────────────────────
+  # 4.1 可视化表单设计器（100% 空白，全新引入）
+  # ──────────────────────────────────────────────────
+  form_engine:
+    status: "完全空白，需全新实现"
+    backend:
+      new_types:
+        - "FormDefinition{FormID, FormName, FormSchema(JSON Schema), Version, Status(draft/published/deprecated), CreatedBy}"
+        - "FormVersion{ID, FormID, Version, Schema, ChangeLog, CreatedAt}"
+        - "FormInstance{InstanceID, FormID, FormVersion, WorkflowInstanceID, NodeID, FormData, Status}"
+        - "FormFieldPermission{NodeID, FieldKey, Permission(editable/readonly/hidden)}"
+        - "FormBinding{WorkflowID, NodeID, FormID, FormVersion}"
+      new_interfaces:
+        - "FormService: Create/Update/Publish/Get/List/Delete/GetVersions/Rollback/BindToWorkflow"
+        - "FormRepository: CRUD + ListVersions + GetBinding"
+      new_tables:
+        - "form_definitions(form_id, form_name, schema JSON, version INT, status, created_by, ...)"
+        - "form_versions(id, form_id, version, schema JSON, change_log, created_at)"
+        - "form_instances(instance_id, form_id, form_version, workflow_instance_id, node_id, form_data JSON, status)"
+        - "form_bindings(id, workflow_id, node_id, form_id, form_version, field_permissions JSON)"
+      extend_existing:
+        - "WorkflowNode.FormBinding 字段（新增可选字段，不破坏已有结构）"
+        - "HumanTaskConfig.FormID 替代原有 FormFields（向后兼容）"
+    frontend:
+      new_pages:
+        - "views/form/FormDesigner.vue（拖拽设计器，20+组件）"
+        - "views/form/FormList.vue（表单管理）"
+        - "views/form/FormMarket.vue（表单模板市场）"
+      new_api: "api/form.ts（create/update/publish/list/get/getVersions/bind）"
+
+  # ──────────────────────────────────────────────────
+  # 4.2 高级审批能力扩展（基于 D3，增量扩展）
+  # ──────────────────────────────────────────────────
+  advanced_approval:
+    status: "D3 已实现基础版 single/or_sign/sequential，需扩展 6 种企业级场景"
+    d3_existing:
+      - "Approve/Reject（single/or_sign/sequential 三种模式）"
+      - "顺序审批推进（CurrentApproverIndex）"
+      - "驳回动作（terminate/goto）"
+      - "超时动作（pass/reject/skip）"
+    d6_new_scenarios:
+      - name: 会签(countersign)
+        description: "所有人必须审批通过，任一驳回终止"
+        backend: "扩展 ApprovalMode 枚举 + handleApproval 逻辑"
+      - name: 加签(add_sign)
+        description: "审批中增加审批人，需原子性更新 HumanTaskConfig.Approvers"
+        backend: "ApprovalService.AddSign(instanceID, nodeID, operator, newApprovers)"
+        db_change: "workflow_approval_records 新增 action='add_sign'"
+      - name: 转签(transfer)
+        description: "将当前审批人的审批权转移给其他人"
+        backend: "ApprovalService.Transfer(instanceID, nodeID, fromApprover, toApprover)"
+      - name: 委托(delegate)
+        description: "审批人设置代理人，一定时间内代为审批"
+        backend: "新增 approval_delegates 表 + DelegateService"
+        new_table: "approval_delegates(id, delegator, delegate, start_time, end_time, scope)"
+      - name: 超时Escalate
+        description: "超时后自动上升到上级审批人"
+        backend: "扩展 HumanTaskConfig.EscalateConfig{EscalateToUserID, EscalateAfterSeconds}"
+      - name: 审批退回(rollback_to_node)
+        description: "驳回后退回到指定节点重新执行，而非直接终止"
+        backend: "扩展 SchedulerService.RollbackToNode(instanceID, targetNodeID)"
+        note: "需要修改调度状态机，要谨慎设计以避免无限循环"
+    extend_existing:
+      - "interfaces/services.go ApprovalService 新增方法（不破坏现有接口）"
+      - "types/types.go HumanTaskConfig 新增可选字段"
+      - "engine/approval_service.go 扩展 handleApproval switch case"
+      - "workflow_approval_records 新增 action 枚举值"
+    frontend:
+      extend: "views/approval/ApprovalWorkbench.vue 新增加签/转签/委托操作按钮"
+      extend_api: "api/approval.ts 新增 addSign/transfer/delegate/getDelegate"
+
+  # ──────────────────────────────────────────────────
+  # 4.3 等保2.0三级合规体系（安全层，全新引入）
+  # ──────────────────────────────────────────────────
+  security_compliance:
+    status: "D4 已有基础认证（JWT+bcrypt），等保三级要求 7 项合规改造"
+    items:
+      - name: 多因子认证(MFA)
+        d4_existing: "单纯 JWT+密码"
+        d6_action:
+          - "sysmanager.AuthService 新增 MFASetup、MFAVerify 方法"
+          - "sys_user 新增 mfa_secret VARCHAR64、mfa_enabled BIT 字段"
+          - "支持 TOTP(RFC 6238) 或短信验证码"
+      - name: 密码安全策略
+        d4_existing: "无复杂度要求"
+        d6_action:
+          - "sys_password_policy 配置表或 AuthConfig 扩展"
+          - "记录登录失败次数，N次失败锁定"
+          - "sys_user 新增 login_fail_count INT、locked_until DATETIME2 字段"
+      - name: 敏感数据加密
+        d4_existing: "密码 bcrypt，其他明文"
+        d6_action:
+          - "FormInstance.FormData 中敏感字段 AES-256-GCM 加密存储"
+          - "workflow_instance_logs 的 before_data/after_data 脱敏"
+          - "新增 encryption_keys 表（KMS 密钥管理）"
+      - name: 不可篡改审计
+        d3_existing: "workflow_instance_logs 已有基础结构"
+        d6_action:
+          - "为 workflow_instance_logs 增加 row_hash VARCHAR64（SHA256 hash of content）"
+          - "实现防止 UPDATE/DELETE 的触发器或应用层强制只追加"
+      - name: 会话管理
+        d4_existing: "无状态 JWT，登出时客户端删除"
+        d6_action:
+          - "Redis 维护 token 黑名单（已在 auth_service.go 中预留扩展注释）"
+          - "AuthService.Logout 实现将 token 写入 Redis 黑名单"
+          - "ValidateToken 增加黑名单检查"
+      - name: 操作权限细粒度控制
+        d4_existing: "PermissionService 接口已定义，需完善实现"
+        d6_action:
+          - "工作流操作（查看/编辑/删除/启动）映射到菜单权限标识"
+          - "审批操作（加签/转签）需要独立权限点"
+          - "数据权限 CheckDataScope 完整实现"
+      - name: 安全审计报告
+        d6_action:
+          - "新增 /admin/security/audit-report API"
+          - "新增 security_events 表记录登录成功/失败/锁定事件"
+
+  # ──────────────────────────────────────────────────
+  # 4.4 数据分析 BI 可视化体系（全新引入）
+  # ──────────────────────────────────────────────────
+  data_analytics:
+    status: "完全空白，需全新实现"
+    backend:
+      new_types:
+        - "WorkflowStats{WorkflowID, Date, TotalInstances, CompletedCount, FailedCount, AvgDuration}"
+        - "NodeStats{WorkflowID, NodeID, Date, AvgDuration, FailedCount, RetryCount}"
+        - "ApprovalStats{Date, ApproverID, TotalTasks, ApprovedCount, RejectedCount, AvgHandleTime}"
+        - "DashboardMetrics（仪表盘聚合指标）"
+      new_interfaces:
+        - "AnalyticsService: GetWorkflowStats/GetNodeBottleneck/GetApprovalStats/GetDashboard/ExportReport"
+        - "AnalyticsRepository: 聚合查询 + 报表数据"
+      new_tables:
+        - "wf_stats_daily（每日流程统计，支持按时间维度查询）"
+        - "wf_node_stats_daily（节点执行统计）"
+        - "approval_stats_daily（审批人效率统计）"
+        - "可选：wf_stats_summary（预聚合缓存表，支持大屏秒级刷新）"
+      api_endpoints:
+        - "GET /analytics/dashboard（运营大屏指标）"
+        - "GET /analytics/workflow/{id}/stats（单流程分析）"
+        - "GET /analytics/approval/efficiency（审批效率报表）"
+        - "GET /analytics/reports（自定义报表列表）"
+        - "POST /analytics/export（数据导出）"
+    frontend:
+      new_pages:
+        - "views/analytics/Dashboard.vue（运营大屏，ECharts）"
+        - "views/analytics/WorkflowReport.vue（流程分析报表）"
+        - "views/analytics/ApprovalReport.vue（审批效率报表）"
+      new_api: "api/analytics.ts"
+      note: "ECharts 或 AntV G2 需作为新依赖引入"
+
+  # ──────────────────────────────────────────────────
+  # 4.5 钉钉/企业微信办公生态适配（全新引入）
+  # ──────────────────────────────────────────────────
+  office_integration:
+    status: "完全空白，需全新实现"
+    backend:
+      new_types:
+        - "OAuthBinding{UserID, Platform(dingtalk/wecom), OpenID, UnionID, AccessToken, RefreshToken, ExpireAt}"
+        - "PushNotificationConfig{Platform, ReceiverID, TemplateID, Content}"
+      new_interfaces:
+        - "OAuthService: GetAuthURL(platform)/Callback(platform, code)/GetUserInfo/BindUser"
+        - "PushNotificationService: PushToUser/PushApprovalTask/PushSystemMessage"
+      new_tables:
+        - "oauth_bindings(id, user_id, platform, open_id, union_id, access_token, expire_at, created_at)"
+        - "push_notification_logs(id, user_id, platform, template_id, content, status, sent_at)"
+      extend_existing:
+        - "sysmodel.AuthConfig 新增 OAuthProviders 配置（钉钉/企微 AppID/Secret）"
+        - "AuthService.Login 支持 grant_type=oauth_code"
+      api_endpoints:
+        - "GET /oauth/{platform}/auth-url（获取授权URL）"
+        - "GET /oauth/{platform}/callback（OAuth回调）"
+        - "POST /oauth/bind（绑定账号）"
+        - "POST /push/approval（推送审批消息）"
+    frontend:
+      new_pages:
+        - "views/integration/OAuthSettings.vue（OAuth绑定设置）"
+        - "移动端H5适配（PWA 或独立 m/ 路由）"
+      new_api: "api/oauth.ts、api/push.ts"
+
+  # ──────────────────────────────────────────────────
+  # 4.6 Golang 插件化生态体系（全新引入）
+  # ──────────────────────────────────────────────────
+  plugin_system:
+    status: "完全空白，需全新实现"
+    backend:
+      new_interfaces:
+        - "Plugin{ID() string, Version() string, Init(ctx PluginContext) error, Destroy() error}"
+        - "NodePlugin extends Plugin + NodeExecutor（自定义节点执行器插件）"
+        - "ApprovalPlugin extends Plugin（自定义审批组件插件）"
+        - "ConnectorPlugin extends Plugin（自定义连接器插件）"
+        - "PluginRegistry: Register/Unregister/Get/List/LoadFromDir（支持热插拔）"
+        - "PluginManager: Install/Uninstall/Enable/Disable/GetStatus"
+      new_types:
+        - "PluginManifest{PluginID, Name, Version, Author, Description, EntryPoint, Dependencies}"
+        - "PluginInstance{ManifestID, Status(loading/running/stopped/error), LoadedAt}"
+      new_tables:
+        - "plugins(plugin_id VARCHAR64 PK, name, version, author, description, entry_binary VARBINARY(MAX)/path, status INT, install_at, manifest JSON)"
+        - "plugin_instances(id, plugin_id, status, loaded_at, error_msg)"
+      approach: >
+        使用 Go 原生 plugin 包（.so 动态库）或 Golang 进程内 plugin 接口。
+        考虑到 Windows 不支持 .so，建议使用 hashicorp/go-plugin（gRPC 进程间）方案。
+      api_endpoints:
+        - "GET /plugins（插件列表）"
+        - "POST /plugins/install（安装插件）"
+        - "DELETE /plugins/{id}（卸载插件）"
+        - "PUT /plugins/{id}/enable（启用）"
+        - "PUT /plugins/{id}/disable（禁用）"
+    frontend:
+      new_pages:
+        - "views/plugin/PluginMarket.vue（插件市场）"
+        - "views/plugin/PluginManage.vue（已安装插件管理）"
+      new_api: "api/plugin.ts"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 5. 架构依赖关系
+# ═══════════════════════════════════════════════════════════════════════════════
+related_architecture:
+  components_relevant_to_domain:
+    - component: engine/
+      responsibility: "所有服务接口实现（ApprovalService、AuditLogManager、CallbackManager 等）"
+      location: engine/
+      relationship_to_domain: "D6 高级审批/表单/插件均需在此目录新增实现"
+    - component: interfaces/
+      responsibility: "服务契约定义层，所有组件依赖此包"
+      location: interfaces/
+      relationship_to_domain: "D6 新能力需在此扩展接口，但不能修改已有方法签名"
+    - component: storage/sqlserver/
+      responsibility: "WorkflowRepository 完整实现"
+      location: storage/sqlserver/repository.go
+      relationship_to_domain: "D6 所有新表均需在此实现新方法"
+    - component: sysbuiltin/
+      responsibility: "系统管理内置实现（AuthService/UserService 等）"
+      location: sysbuiltin/
+      relationship_to_domain: "D6 MFA、OAuth、安全策略扩展需在此扩展"
+    - component: worker/
+      responsibility: "Worker 节点执行逻辑，管理 NodeExecutorContainer"
+      location: worker/
+      relationship_to_domain: "D6 插件体系需与 worker 集成，插件化节点通过 NodeExecutorContainer.Register 注册"
+
+  key_relationships_to_domain:
+    - from: engine/approval_service.go
+      to: interfaces/SchedulerService
+      relationship: "calls（审批通过后调用 sched.HandleNodeCompleted 推进流程）"
+    - from: engine/approval_service.go
+      to: interfaces/WorkflowRepository
+      relationship: "calls（直接查询节点状态和流程定义）"
+    - from: engine/approval_service.go
+      to: interfaces/AuditLogManager
+      relationship: "calls（审批操作记录审计日志）"
+    - from: worker/executor_container.go
+      to: interfaces/NodeExecutorContainer
+      relationship: "implements（D6 插件节点注册点）"
+    - from: sysbuiltin/auth_service.go
+      to: sysrepo/UserRepo
+      relationship: "calls（用户查询）"
+    - from: storage/sqlserver/repository.go
+      to: interfaces/WorkflowRepository
+      relationship: "implements"
+    - from: "D6 FormService"
+      to: interfaces/WorkflowRepository
+      relationship: "reads（读取 workflow_defs 以验证表单绑定合法性）"
+    - from: "D6 AnalyticsService"
+      to: "interfaces/WorkflowRepository（间接，通过新的 AnalyticsRepository）"
+      relationship: "reads（聚合查询 workflow_instances、workflow_node_states）"
+
+  data_flow_involving_domain: |
+    流程启动 → WorkflowService → SchedulerService → WorkerManagerService → Worker 执行 → 上报 TaskResult →
+    InstanceStateService → SchedulerService.HandleNodeCompleted → 下一节点调度
+    
+    人工审批路径（D3/D6）：
+    调度到达 human_task 节点 → Worker 将节点状态设为 waiting →
+    用户通过 ApprovalWorkbench 提交审批 → ApprovalService.handleApproval →
+    [D6 高级模式：加签/转签/委托] → 最终 completeApproval/rejectApproval →
+    stateService.UpdateNodeState + sched.HandleNodeCompleted → 流程继续
+
+related_technology_stack:
+  languages_used_in_domain: [Go 1.21+, TypeScript, SQL (SQL Server T-SQL)]
+  frameworks_used_in_domain:
+    - name: github.com/zhiyunliu/glue
+      usage_in_domain: "HTTP 服务框架（endpoint/http/ 目录）"
+    - name: Vue 3 + script setup
+      usage_in_domain: "前端全部页面"
+    - name: Element Plus
+      usage_in_domain: "前端 UI 组件库"
+    - name: Pinia
+      usage_in_domain: "前端状态管理"
+  libraries_used_in_domain:
+    - name: github.com/google/uuid
+      purpose_in_domain: "生成审批记录、审计日志等 ID"
+    - name: github.com/rs/zerolog
+      purpose_in_domain: "结构化日志"
+    - name: golang.org/x/crypto/bcrypt
+      purpose_in_domain: "密码 hash（D4，D6 扩展 MFA 需 pquerna/otp）"
+    - name: github.com/microsoft/go-mssqldb
+      purpose_in_domain: "SQL Server 驱动"
+
+domain_security_considerations:
+  sensitive_areas:
+    - area: sys_user.password
+      location: "storage/sqlserver/syssqlserver.go（推断）"
+      concern: "bcrypt hash，D6 禁止明文传输，需 HTTPS"
+    - area: workflow_approval_records.form_data
+      location: storage/sqlserver/repository.go
+      concern: "D6 表单数据可能含身份证/手机号等敏感信息，需字段级加密"
+    - area: AuthConfig.Secret
+      location: sysmodel/types.go
+      concern: "JWT 签名密钥硬编码了默认值 'distributed-workflow-default-secret-change-me'，D6 必须强制替换，建议从环境变量注入"
+    - area: oauth_binding.access_token
+      location: "D6 新增 oauth_bindings 表"
+      concern: "第三方 OAuth Token 需加密存储"
+  authentication_patterns_in_domain: "JWT Bearer Token（HS256），D4 已实现，D6 扩展 MFA + OAuth"
+  authorization_patterns_in_domain: "基于角色的权限（RBAC），PermissionService 检查 perms 字符串，D6 需细化工作流操作权限点"
+  data_validation_in_domain: "Go 端 binding tag，D6 需增加表单数据 Schema 校验"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 6. 开放问题 & 缺口
+# ═══════════════════════════════════════════════════════════════════════════════
+open_questions:
+  - question: "插件化体系采用 Go 原生 plugin(.so) 还是 hashicorp/go-plugin(gRPC)？"
+    context: "go plugin 不支持 Windows，hashicorp/go-plugin 支持跨平台但需额外进程。项目目前在 Windows 开发环境运行。"
+    type: decision_blocker
+    affects: [plugin_system, worker/executor_container.go]
+
+  - question: "AnalyticsService 统计数据是实时查询还是预聚合？"
+    context: "百万级数据秒级查询要求，实时查询需要物化视图或专用统计表，预聚合需定时任务。SQL Server 环境下需确定方案。"
+    type: decision_blocker
+    affects: [data_analytics, schema_d6.sql]
+
+  - question: "等保合规的审计日志不可篡改如何实现？"
+    context: "SQL Server 触发器可阻止 UPDATE/DELETE，但会影响性能；应用层强制只追加依赖代码规范；是否需要外部存证服务？"
+    type: decision_blocker
+    affects: [security_compliance, workflow_instance_logs]
+
+  - question: "D6 表单设计器组件是自研还是集成开源方案（如 form-create、form-making）？"
+    context: "自研灵活但工作量大；开源方案需评估 License 合规性（企业私有化部署）"
+    type: decision_blocker
+    affects: [form_engine, web/src/views/form]
+
+  - question: "WorkflowNode 上的 FormBinding 字段是直接扩展 WorkflowNode 结构体还是维护独立的 form_bindings 表？"
+    context: "直接扩展 WorkflowNode 最简单但会污染核心类型；独立表更清晰但需额外查询"
+    type: decision_blocker
+    affects: [form_engine, types/types.go]
+
+  - question: "approval_delegates 代理委托表中的授权范围(scope)如何设计？"
+    context: "可以按工作流范围、全局范围、指定节点类型范围。范围越细粒度实现越复杂。"
+    type: research
+    affects: [advanced_approval]
+
+gaps:
+  - area: "interfaces/services.go 中 TemplateService 接口未完整定义"
+    description: "repository.go 中已定义 D5 模板 Repository 方法，但 services.go 中 TemplateService 接口缺失（需确认是否在其他文件中定义）"
+    impact: research_blocker
+    affects: [template_service, D5]
+
+  - area: "web/src/types/ 目录内容未读取"
+    description: "TypeScript 类型定义文件未完整梳理，D6 新增类型需基于现有 TS 类型扩展"
+    impact: nice_to_know
+    affects: [frontend, D6 types]
+
+  - area: "engine/ 目录中的 workflow_service.go、template_service.go 等文件未深度阅读"
+    description: "仅读取了 approval_service.go，其他服务实现的具体代码逻辑未梳理"
+    impact: nice_to_know
+    affects: [engine_implementation_details]
+
+  - area: "D6 数据库初始化脚本 schema_d6.sql 尚未创建"
+    description: "D6 所有新表需要一个新的增量脚本文件，且需遵循 D1-D5 的「IF NOT EXISTS」幂等风格"
+    impact: research_blocker
+    affects: [all D6 features]
+
+  - area: "等保合规中 JWT Secret 硬编码安全风险"
+    description: "sysmodel/types.go DefaultAuthConfig.Secret 使用了明文默认密钥，生产环境必须通过环境变量覆盖，D6 应增加启动时强制校验"
+    impact: decision_blocker
+    affects: [security_compliance, sysmodel/types.go]

@@ -1,0 +1,787 @@
+plan_id: "20260428-d6-ga-v1"
+plan_objective: "D6阶段 v1.0.0 GA版本 企业级全能力闭环实施"
+complexity: complex
+created_at: "2026-04-28"
+
+tasks:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 1: 数据库Schema + 核心接口定义
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d6-w1-t1"
+    wave: 1
+    title: "新增D6数据库Schema文件"
+    agent: gem-implementer
+    status: not-started
+    dependencies: []
+    files:
+      - "storage/sqlserver/schema_d6.sql"
+    description: |
+      创建 storage/sqlserver/schema_d6.sql，包含D6阶段所有新增表：
+      1. form_definition (form_id VARCHAR(64) PK, form_name, description, form_schema NVARCHAR(MAX), version INT, status INT, created_by, created_at, updated_at, deleted BIT)
+      2. form_instance (instance_id PK, form_id, form_version, workflow_instance_id, node_id, form_data NVARCHAR(MAX), status, created_by, created_at, updated_at)
+      3. form_version_history (id BIGINT IDENTITY PK, form_id, version, form_schema, change_log, created_by, created_at; UNIQUE(form_id,version))
+      4. approval_delegate (id BIGINT IDENTITY PK, delegator_id, agent_id, start_time, end_time, status INT DEFAULT 1, created_by, created_at, updated_at)
+      5. approval_cc (id BIGINT IDENTITY PK, workflow_instance_id, node_id, cc_user_id, cc_time, is_read BIT DEFAULT 0, read_time)
+      6. approval_add_sign (id BIGINT IDENTITY PK, workflow_instance_id, node_id, operator_id, sign_type VARCHAR(32), sign_users NVARCHAR(MAX), created_at)
+      7. stats_workflow_daily (id BIGINT IDENTITY PK, workflow_id, stat_date DATE, start_count, complete_count, fail_count, avg_execution_time_ms BIGINT, max_execution_time_ms BIGINT, timeout_count, reject_count; UNIQUE(workflow_id, stat_date))
+      8. stats_approval_daily (id BIGINT IDENTITY PK, user_id, stat_date DATE, approve_count, reject_count, avg_approval_time_ms BIGINT, timeout_count; UNIQUE(user_id, stat_date))
+      9. oauth_bindings (id BIGINT IDENTITY PK, sys_user_id VARCHAR(64), platform VARCHAR(32), open_id VARCHAR(128), union_id VARCHAR(128), nickname, avatar_url, access_token, refresh_token, token_expire_at, created_at, updated_at; UNIQUE(platform, open_id))
+      10. plugin_info (plugin_id VARCHAR(64) PK, plugin_name VARCHAR(128) UNIQUE, description, author, version, plugin_type, plugin_package NVARCHAR(MAX), config_schema NVARCHAR(MAX), status INT DEFAULT 0, is_official BIT, download_count INT, rating DECIMAL(2,1), created_at, updated_at)
+      11. plugin_config (id BIGINT IDENTITY PK, plugin_id VARCHAR(64) UNIQUE, plugin_version, config NVARCHAR(MAX), status INT DEFAULT 1, installed_at, updated_at)
+      以及原有表的索引优化（idx_workflow_instances_workflow_id_status等4个索引）。
+      注意：所有注释使用中文，字段加注释说明。
+
+  - task_id: "d6-w1-t2"
+    wave: 1
+    title: "定义表单引擎核心类型与接口"
+    agent: gem-implementer
+    status: not-started
+    dependencies: []
+    files:
+      - "types/form_types.go"
+      - "interfaces/form_service.go"
+      - "interfaces/form_repository.go"
+    description: |
+      1. types/form_types.go：定义表单相关类型
+         - FormDefinition struct (FormID, FormName, Description, FormSchema map[string]interface{}, Version int, Status int, CreatedBy, CreatedAt, UpdatedAt time.Time, Deleted bool)
+         - FormInstance struct (InstanceID, FormID, FormVersion, WorkflowInstanceID, NodeID, FormData map[string]interface{}, Status int, CreatedBy, CreatedAt, UpdatedAt)
+         - FormVersionHistory struct (ID int64, FormID, Version, FormSchema map[string]interface{}, ChangeLog, CreatedBy, CreatedAt)
+         - FormBindingConfig struct (启动表单绑定配置，用于流程定义扩展)
+         - FormFieldPermission struct (字段权限配置: FieldKey, NodeID, Permission string(editable/readonly/hidden))
+         所有struct加json标签。
+      2. interfaces/form_service.go：FormService接口
+         - CreateForm(ctx, def) error
+         - GetForm(ctx, formID) (*types.FormDefinition, error)
+         - UpdateForm(ctx, def) error
+         - ListForms(ctx, page, pageSize, status) ([]*types.FormDefinition, int64, error)
+         - PublishForm(ctx, formID, changeLog, operatorID) error
+         - RollbackForm(ctx, formID, version int, operatorID) error
+         - GetFormVersions(ctx, formID) ([]*types.FormVersionHistory, error)
+         - SaveFormInstance(ctx, inst) error
+         - GetFormInstance(ctx, instanceID) (*types.FormInstance, error)
+         - GetFormInstanceByWorkflow(ctx, workflowInstanceID, nodeID) (*types.FormInstance, error)
+      3. interfaces/form_repository.go：FormRepository接口（与FormService方法对应的数据库操作）
+
+  - task_id: "d6-w1-t3"
+    wave: 1
+    title: "扩展审批服务接口（高级审批）"
+    agent: gem-implementer
+    status: not-started
+    dependencies: []
+    files:
+      - "types/approval_types_d6.go"
+      - "interfaces/approval_service_d6.go"
+    description: |
+      1. types/approval_types_d6.go：D6新增审批类型
+         - ApprovalMode string enum (countersign会签, orsign或签, sequential顺序)
+         - AdvancedApprovalConfig struct (Mode, PassRate float64, TimeoutAction string, TimeoutHours int)
+         - AddSignRequest struct (WorkflowInstanceID, NodeID, OperatorID, SignType(before/after), SignUsers []string, Comment)
+         - TransferRequest struct (WorkflowInstanceID, NodeID, OperatorID, TargetUserID, Comment)
+         - ReturnRequest struct (WorkflowInstanceID, NodeID, OperatorID, TargetNodeID, Comment)
+         - WithdrawRequest struct (WorkflowInstanceID, OperatorID, Comment)
+         - DelegateConfig struct (DelegatorID, AgentID, StartTime, EndTime time.Time)
+         - CCRequest struct (WorkflowInstanceID, NodeID, CCUserIDs []string)
+         ApprovalStatus扩展常量: pending/approved/rejected/cancelled/waiting_sign/waiting_seq/add_sign/transfered/returned/withdrawn/cc
+      2. interfaces/approval_service_d6.go：AdvancedApprovalService接口（新接口，不修改已有ApprovalService）
+         - AddSign(ctx, req AddSignRequest) error
+         - Transfer(ctx, req TransferRequest) error
+         - Return(ctx, req ReturnRequest) error
+         - Withdraw(ctx, req WithdrawRequest) error
+         - SetDelegate(ctx, cfg DelegateConfig) error
+         - GetDelegates(ctx, userID) ([]*DelegateConfig, error)
+         - SendCC(ctx, req CCRequest) error
+         - GetCCList(ctx, userID, page, pageSize) (list, total, error)
+         - MarkCCRead(ctx, ccID int64) error
+
+  - task_id: "d6-w1-t4"
+    wave: 1
+    title: "定义BI分析服务接口"
+    agent: gem-implementer
+    status: not-started
+    dependencies: []
+    files:
+      - "types/analytics_types.go"
+      - "interfaces/analytics_service.go"
+    description: |
+      1. types/analytics_types.go：BI分析相关类型
+         - WorkflowOverviewStats struct (TotalDefinitions, TotalInstances, MonthlyNewInstances, ActiveInstances int64, AvgExecutionTimeMs int64, PassRate float64)
+         - WorkflowDailyStats struct (WorkflowID, StatDate string, StartCount, CompleteCount, FailCount, TimeoutCount, RejectCount int, AvgExecutionTimeMs, MaxExecutionTimeMs int64)
+         - ApprovalPerformanceStats struct (UserID, StatDate string, ApproveCount, RejectCount, TimeoutCount int, AvgApprovalTimeMs int64)
+         - StatsTrendData struct (Dates []string, Series []StatsSeries)
+         - StatsSeries struct (Name string, Data []int64)
+         - StatsQueryParams struct (StartDate, EndDate, WorkflowID, UserID string, GroupBy string)
+      2. interfaces/analytics_service.go：AnalyticsService接口
+         - GetWorkflowOverview(ctx) (*WorkflowOverviewStats, error)
+         - GetWorkflowEfficiency(ctx, params StatsQueryParams) ([]*WorkflowDailyStats, error)
+         - GetApprovalPerformance(ctx, params StatsQueryParams) ([]*ApprovalPerformanceStats, error)
+         - GetInstanceTrend(ctx, params StatsQueryParams) (*StatsTrendData, error)
+         - RefreshDailyStats(ctx, date string) error (供定时任务调用)
+
+  - task_id: "d6-w1-t5"
+    wave: 1
+    title: "定义插件化框架接口"
+    agent: gem-implementer
+    status: not-started
+    dependencies: []
+    files:
+      - "types/plugin_types.go"
+      - "interfaces/plugin_service.go"
+      - "plugin/sdk.go"
+      - "plugin/doc.go"
+    description: |
+      1. types/plugin_types.go：插件相关类型
+         - PluginInfo struct (PluginID, PluginName, Description, Author, Version, PluginType, ConfigSchema string, Status int, IsOfficial bool, DownloadCount int, Rating float64, CreatedAt, UpdatedAt time.Time)
+         - PluginConfig struct (PluginID, PluginVersion, Config string, Status int, InstalledAt, UpdatedAt time.Time)
+         - PluginType常量: NodeExecutorPlugin, ConnectorPlugin, NotificationPlugin, ReportPlugin
+         - PluginStatus常量: 0=未安装 1=已安装 2=已启用 3=已停用
+      2. interfaces/plugin_service.go：PluginService接口
+         - ListPluginMarket(ctx, page, pageSize) ([]*PluginInfo, int64, error)
+         - GetPlugin(ctx, pluginID) (*PluginInfo, error)
+         - InstallPlugin(ctx, pluginID, config string) error
+         - ListInstalledPlugins(ctx) ([]*PluginConfig, error)
+         - EnablePlugin(ctx, pluginID) error
+         - DisablePlugin(ctx, pluginID) error
+         - UninstallPlugin(ctx, pluginID) error
+         - UpdatePluginConfig(ctx, pluginID, config string) error
+      3. plugin/sdk.go：插件开发SDK核心接口定义
+         - Plugin接口: ID() string, Name() string, Version() string, Type() PluginType, Init(config string) error, Destroy() error
+         - NodeExecutorPlugin接口（嵌入Plugin）: Execute(ctx, input map[string]interface{}) (map[string]interface{}, error)
+         - ConnectorPlugin接口（嵌入Plugin）: Connect(config map[string]interface{}) error, Call(method string, params map[string]interface{}) (interface{}, error)
+         - 提供 BasePlugin struct 作为默认实现基类
+      4. plugin/doc.go：包说明文档
+
+  - task_id: "d6-w1-t6"
+    wave: 1
+    title: "定义OAuth/办公生态接口"
+    agent: gem-implementer
+    status: not-started
+    dependencies: []
+    files:
+      - "types/oauth_types.go"
+      - "interfaces/oauth_service.go"
+    description: |
+      1. types/oauth_types.go：OAuth相关类型
+         - OAuthBinding struct (ID int64, SysUserID, Platform, OpenID, UnionID, Nickname, AvatarURL, CreatedAt, UpdatedAt)
+         - OAuthPlatform常量: dingtalk, wechatwork
+         - DingTalkConfig struct (AppKey, AppSecret, AgentID string)
+         - WechatWorkConfig struct (CorpID, AgentID, AgentSecret string)
+         - OAuthUserInfo struct (Platform, OpenID, UnionID, Nickname, AvatarURL, Mobile string)
+      2. interfaces/oauth_service.go：OAuthService接口
+         - GetDingTalkAuthURL(ctx, redirectURI, state string) (string, error)
+         - HandleDingTalkCallback(ctx, code string) (*OAuthUserInfo, error)
+         - GetWechatWorkAuthURL(ctx, redirectURI, state string) (string, error)
+         - HandleWechatWorkCallback(ctx, code string) (*OAuthUserInfo, error)
+         - BindUser(ctx, sysUserID string, info *OAuthUserInfo) error
+         - GetBindingByOpenID(ctx, platform, openID string) (*OAuthBinding, error)
+         - GetBindingBySysUser(ctx, sysUserID string) ([]*OAuthBinding, error)
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 2: 后端存储层实现
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d6-w2-t1"
+    wave: 2
+    title: "SQL Server实现-表单引擎Repository"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d6-w1-t1", "d6-w1-t2"]
+    files:
+      - "storage/sqlserver/form_repository.go"
+    description: |
+      在 storage/sqlserver/ 实现 interfaces/form_repository.go 接口。
+      文件名：form_repository.go
+      结构体：formRepository struct { db *sql.DB }
+      实现所有FormRepository接口方法，使用参数化查询防止SQL注入。
+      注意：
+      - form_schema/form_data 字段以JSON字符串存储，读取时反序列化为 map[string]interface{}
+      - 使用 database/sql 标准库，不引入ORM框架
+      - 所有查询使用参数化 @p1 @p2 等占位符（SQL Server风格）
+      - PublishForm实现：更新version+1，写入form_version_history，更新status=1
+      - RollbackForm实现：从form_version_history读取指定版本schema，创建新版本记录
+
+  - task_id: "d6-w2-t2"
+    wave: 2
+    title: "SQL Server实现-高级审批Repository"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d6-w1-t1", "d6-w1-t3"]
+    files:
+      - "storage/sqlserver/approval_repository_d6.go"
+    description: |
+      在 storage/sqlserver/ 实现高级审批相关的数据库操作。
+      文件名：approval_repository_d6.go
+      实现接口（在interfaces/approval_service_d6.go中定义的Repository部分）：
+      - CreateDelegate/GetActiveDelegates/GetDelegatesByDelegator/UpdateDelegateStatus
+      - CreateCC/GetCCList(userID, page, pageSize)/MarkCCRead
+      - CreateAddSignRecord/GetAddSignRecords(instanceID, nodeID)
+      所有写操作记录created_at/updated_at，所有查询加index字段过滤。
+      参数化查询防SQL注入。
+
+  - task_id: "d6-w2-t3"
+    wave: 2
+    title: "SQL Server实现-BI分析Repository"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d6-w1-t1", "d6-w1-t4"]
+    files:
+      - "storage/sqlserver/analytics_repository.go"
+    description: |
+      在 storage/sqlserver/ 实现BI分析相关的数据库操作。
+      文件名：analytics_repository.go
+      实现方法：
+      - GetWorkflowOverview：COUNT各类实例状态，计算平均执行时间
+        (SELECT COUNT from workflow_instances grouped by status)
+      - GetWorkflowDailyStats(startDate, endDate, workflowID)：从stats_workflow_daily查询
+      - GetApprovalDailyStats(startDate, endDate, userID)：从stats_approval_daily查询
+      - GetInstanceTrend(startDate, endDate, groupBy)：按天/周/月统计实例数量趋势
+      - RefreshWorkflowDailyStats(date)：MERGE INTO stats_workflow_daily，从workflow_instances计算当日汇总
+      - RefreshApprovalDailyStats(date)：MERGE INTO stats_approval_daily，从workflow_approval_records计算当日汇总
+      所有查询使用参数化，日期范围过滤使用 BETWEEN @startDate AND @endDate。
+
+  - task_id: "d6-w2-t4"
+    wave: 2
+    title: "SQL Server实现-插件与OAuth Repository"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d6-w1-t1", "d6-w1-t5", "d6-w1-t6"]
+    files:
+      - "storage/sqlserver/plugin_repository.go"
+      - "storage/sqlserver/oauth_repository.go"
+    description: |
+      1. plugin_repository.go：实现插件相关数据库操作
+         - GetAllPluginInfos/GetPluginInfo/UpsertPluginInfo
+         - GetPluginConfig/UpsertPluginConfig/DeletePluginConfig
+         - UpdatePluginStatus(pluginID, status)
+         - ListInstalledPlugins（从plugin_config查询status=1或2的记录，JOIN plugin_info）
+      2. oauth_repository.go：实现OAuth绑定相关数据库操作
+         - CreateBinding/GetBindingByOpenID/GetBindingBySysUser/UpdateBinding/DeleteBinding
+         - UpdateAccessToken(platform, openID, token, expireAt)
+      所有操作参数化查询，token字段存储前应加密（调用sysbuiltin或types中的加密工具）。
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 3: 业务服务层实现
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d6-w3-t1"
+    wave: 3
+    title: "实现表单引擎业务服务"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d6-w2-t1"]
+    files:
+      - "engine/form_service.go"
+    description: |
+      在 engine/ 实现 FormService 接口（interfaces/form_service.go）。
+      结构体：formService struct { repo interfaces.FormRepository }
+      - CreateForm：生成UUID作为FormID，version=1，status=0(草稿)，校验FormName不为空
+      - GetForm：直接查询，deleted=false
+      - UpdateForm：仅草稿状态可修改，更新updated_at
+      - ListForms：分页查询，支持status过滤
+      - PublishForm：调用repo.PublishForm，自动递增版本号，写入版本历史
+      - RollbackForm：调用repo.RollbackForm，创建新版本基于历史版本schema
+      - GetFormVersions：查询该表单所有版本历史
+      - SaveFormInstance：生成UUID，保存表单实例数据
+      - GetFormInstance：查询表单实例
+      - GetFormInstanceByWorkflow：按workflow_instance_id和node_id查询
+      所有方法显式处理error，不使用panic。
+
+  - task_id: "d6-w3-t2"
+    wave: 3
+    title: "实现高级审批业务服务"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d6-w2-t2"]
+    files:
+      - "engine/advanced_approval_service.go"
+    description: |
+      在 engine/ 实现 AdvancedApprovalService 接口（interfaces/approval_service_d6.go）。
+      结构体：advancedApprovalService struct { repo interfaces.AdvancedApprovalRepository, instanceStateRepo interfaces.InstanceStateRepository }
+      核心实现：
+      - AddSign：校验操作人有审批权限，创建加签记录，sign_type(before/after)
+        - before加签：在当前审批人审批前，插入新审批任务到队列
+        - after加签：当前审批通过后，追加审批任务
+      - Transfer：校验操作人，更新节点审批任务的assigned_to为target_user_id，记录转签
+      - Return：校验目标节点存在于历史节点中，将实例状态回退到目标节点，重新创建待审批任务
+      - Withdraw：仅发起人可撤回，仅待审批状态可撤回，更新实例状态为cancelled，记录操作
+      - SetDelegate：校验时间范围合法，委托时间start<end，不允许自我委托，存储委托配置
+      - GetDelegates：查询用户的委托配置列表
+      - SendCC：创建多条cc记录（每个cc_user_id一条），cc_time=now
+      - GetCCList：分页查询当前用户的抄送列表
+      - MarkCCRead：更新is_read=1，read_time=now
+      所有方法显式处理error，不使用panic。入参校验使用if err := validate(...) 模式。
+
+  - task_id: "d6-w3-t3"
+    wave: 3
+    title: "实现BI分析业务服务"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d6-w2-t3"]
+    files:
+      - "engine/analytics_service.go"
+    description: |
+      在 engine/ 实现 AnalyticsService 接口（interfaces/analytics_service.go）。
+      结构体：analyticsService struct { repo interfaces.AnalyticsRepository }
+      - GetWorkflowOverview：汇总所有流程定义数、实例总数、月新增数（当月）、活跃实例数（running状态）、平均执行时间、通过率
+      - GetWorkflowEfficiency：调用repo.GetWorkflowDailyStats，支持按workflowID过滤和日期范围
+      - GetApprovalPerformance：调用repo.GetApprovalDailyStats
+      - GetInstanceTrend：构造趋势数据，返回dates[]和series[]（包含"总计"、"已完成"、"失败"三条线）
+      - RefreshDailyStats：调用repo.RefreshWorkflowDailyStats和RefreshApprovalDailyStats，用于定时任务
+
+  - task_id: "d6-w3-t4"
+    wave: 3
+    title: "实现插件注册管理服务"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d6-w2-t4"]
+    files:
+      - "engine/plugin_service.go"
+      - "plugin/registry.go"
+    description: |
+      1. engine/plugin_service.go：实现PluginService接口
+         结构体：pluginService struct { repo interfaces.PluginRepository, registry *plugin.PluginRegistry }
+         - ListPluginMarket：查询plugin_info表中的插件（含官方预设）
+         - GetPlugin：按pluginID查询
+         - InstallPlugin：检查插件存在，写入plugin_config记录（status=1），调用registry.Register
+         - ListInstalledPlugins：查询已安装插件
+         - EnablePlugin：更新plugin_config.status=2，调用registry.Enable
+         - DisablePlugin：更新plugin_config.status=3，调用registry.Disable
+         - UninstallPlugin：调用registry.Unregister，删除plugin_config记录，更新plugin_info.status=0
+         - UpdatePluginConfig：更新plugin_config.config字段
+      2. plugin/registry.go：插件注册中心
+         PluginRegistry struct，内部使用sync.RWMutex保护 map[string]Plugin 存储
+         - Register(plugin Plugin) error：注册插件，校验ID唯一
+         - Unregister(pluginID string) error：注销插件，调用plugin.Destroy()
+         - Enable(pluginID string) error
+         - Disable(pluginID string) error
+         - GetPlugin(pluginID string) (Plugin, bool)
+         - GetPluginsByType(pType PluginType) []Plugin
+         - NewPluginRegistry() *PluginRegistry 构造函数
+
+  - task_id: "d6-w3-t5"
+    wave: 3
+    title: "实现OAuth服务框架"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d6-w2-t4"]
+    files:
+      - "engine/oauth_service.go"
+    description: |
+      在 engine/ 实现 OAuthService 接口框架（interfaces/oauth_service.go）。
+      结构体：oauthService struct { repo interfaces.OAuthRepository, dingtalkCfg *types.DingTalkConfig, wechatWorkCfg *types.WechatWorkConfig }
+      注意：钉钉/企业微信SDK调用使用HTTP请求实现，不引入第三方SDK依赖。
+      - GetDingTalkAuthURL：构造钉钉OAuth2.0扫码授权URL
+        URL格式：https://login.dingtalk.com/oauth2/auth?client_id={appkey}&redirect_uri={redirectURI}&response_type=code&scope=openid&state={state}
+      - HandleDingTalkCallback：使用code换取钉钉accessToken，再获取用户信息
+        1. POST https://api.dingtalk.com/v1.0/oauth2/userAccessToken (code换token)
+        2. GET https://api.dingtalk.com/v1.0/contact/users/me (获取用户信息)
+      - GetWechatWorkAuthURL：构造企业微信OAuth2.0授权URL
+        URL格式：https://open.weixin.qq.com/connect/oauth2/authorize?appid={corpid}&redirect_uri={redirectURI}&response_type=code&scope=snsapi_base&state={state}#wechat_redirect
+      - HandleWechatWorkCallback：使用code换取企业微信用户信息
+        GET https://qyapi.weixin.qq.com/cgi-bin/user/getuserinfo?access_token={token}&code={code}
+      - BindUser：存储OAuth绑定关系
+      - GetBindingByOpenID/GetBindingBySysUser：查询绑定关系
+      所有HTTP请求设置超时30s，使用标准net/http.Client，不使用全局client。
+      IMPORTANT：钉钉/企业微信appSecret等敏感配置从配置文件读取，禁止硬编码。
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 4: HTTP API层
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d6-w4-t1"
+    wave: 4
+    title: "表单引擎HTTP API"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d6-w3-t1"]
+    files:
+      - "endpoint/http/server_d6_form.go"
+    description: |
+      在 endpoint/http/ 实现表单设计器相关API，参考已有 server_d4.go 风格。
+      API路由注册到 Server.registerFormRoutes(group)。
+      实现以下接口（遵循RESTful，统一返回 {code, message, data}）：
+      - GET  /api/v1/form/list           → FormService.ListForms (分页: page, pageSize, status)
+      - POST /api/v1/form/create         → FormService.CreateForm
+      - GET  /api/v1/form/:formId        → FormService.GetForm
+      - PUT  /api/v1/form/:formId/update → FormService.UpdateForm
+      - POST /api/v1/form/:formId/publish → FormService.PublishForm
+      - GET  /api/v1/form/:formId/versions → FormService.GetFormVersions
+      - POST /api/v1/form/:formId/rollback → FormService.RollbackForm
+      - GET  /api/v1/form/instance/:instanceId → FormService.GetFormInstance
+      - POST /api/v1/form/instance/save  → FormService.SaveFormInstance
+      权限：需JWT认证，从context获取userID作为operator。
+      所有入参校验，参数错误返回400，服务错误返回500，成功返回200。
+
+  - task_id: "d6-w4-t2"
+    wave: 4
+    title: "高级审批HTTP API"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d6-w3-t2"]
+    files:
+      - "endpoint/http/server_d6_approval.go"
+    description: |
+      在 endpoint/http/ 实现高级审批相关API。
+      API路由注册到 Server.registerAdvancedApprovalRoutes(group)。
+      实现接口：
+      - POST /api/v1/approval/:instanceId/:nodeId/add-sign → AdvancedApprovalService.AddSign
+      - POST /api/v1/approval/:instanceId/:nodeId/transfer → AdvancedApprovalService.Transfer
+      - POST /api/v1/approval/:instanceId/return   → AdvancedApprovalService.Return
+      - POST /api/v1/approval/:instanceId/withdraw → AdvancedApprovalService.Withdraw
+      - POST /api/v1/approval/delegate/set   → AdvancedApprovalService.SetDelegate
+      - GET  /api/v1/approval/delegate/list  → AdvancedApprovalService.GetDelegates
+      - GET  /api/v1/approval/cc/list        → AdvancedApprovalService.GetCCList (当前用户)
+      - POST /api/v1/approval/cc/:id/read   → AdvancedApprovalService.MarkCCRead
+      权限：需JWT认证，从context提取当前userID。
+
+  - task_id: "d6-w4-t3"
+    wave: 4
+    title: "BI分析HTTP API"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d6-w3-t3"]
+    files:
+      - "endpoint/http/server_d6_stats.go"
+    description: |
+      在 endpoint/http/ 实现数据分析相关API。
+      API路由注册到 Server.registerStatsRoutes(group)。
+      实现接口：
+      - GET /api/v1/stats/workflow/overview     → AnalyticsService.GetWorkflowOverview
+      - GET /api/v1/stats/workflow/efficiency   → AnalyticsService.GetWorkflowEfficiency (query: startDate, endDate, workflowId)
+      - GET /api/v1/stats/approval/performance → AnalyticsService.GetApprovalPerformance (query: startDate, endDate, userId)
+      - GET /api/v1/stats/instance/trend       → AnalyticsService.GetInstanceTrend (query: startDate, endDate, groupBy=day/week/month)
+      - POST /api/v1/stats/report/export       → 构造Excel导出（使用encoding/csv输出CSV格式作为最小实现）
+      权限：需JWT认证，管理员权限。
+
+  - task_id: "d6-w4-t4"
+    wave: 4
+    title: "插件管理HTTP API"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d6-w3-t4"]
+    files:
+      - "endpoint/http/server_d6_plugin.go"
+    description: |
+      在 endpoint/http/ 实现插件管理相关API。
+      API路由注册到 Server.registerPluginRoutes(group)。
+      实现接口：
+      - GET  /api/v1/plugin/market/list          → PluginService.ListPluginMarket
+      - GET  /api/v1/plugin/market/:pluginId     → PluginService.GetPlugin
+      - POST /api/v1/plugin/install              → PluginService.InstallPlugin
+      - GET  /api/v1/plugin/list                 → PluginService.ListInstalledPlugins
+      - POST /api/v1/plugin/:pluginId/enable     → PluginService.EnablePlugin
+      - POST /api/v1/plugin/:pluginId/disable    → PluginService.DisablePlugin
+      - POST /api/v1/plugin/:pluginId/uninstall  → PluginService.UninstallPlugin
+      - PUT  /api/v1/plugin/:pluginId/config     → PluginService.UpdatePluginConfig
+      权限：需JWT认证，管理员权限。
+
+  - task_id: "d6-w4-t5"
+    wave: 4
+    title: "OAuth登录HTTP API"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d6-w3-t5"]
+    files:
+      - "endpoint/http/server_d6_oauth.go"
+    description: |
+      在 endpoint/http/ 实现OAuth登录相关API。
+      实现接口：
+      - GET /api/v1/oauth/dingtalk/login       → 重定向到钉钉授权URL（无需认证）
+      - GET /api/v1/oauth/dingtalk/callback    → 处理钉钉回调，查找/创建用户，发放JWT
+      - GET /api/v1/oauth/wechatwork/login     → 重定向到企微授权URL（无需认证）
+      - GET /api/v1/oauth/wechatwork/callback  → 处理企微回调，查找/创建用户，发放JWT
+      - GET /api/v1/contact/department/list    → 调用钉钉/企微通讯录接口获取部门列表（需认证）
+      - GET /api/v1/contact/user/list          → 获取指定部门用户列表（需认证）
+      登录成功后使用已有JWT生成机制生成Token返回。
+      注意：OAuth回调中防止CSRF攻击，校验state参数（使用session或短期token）。
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 5: 安全合规强化
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d6-w5-t1"
+    wave: 5
+    title: "修复JWT硬编码密钥安全漏洞"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d6-w1-t1"]
+    files:
+      - "sysmodel/types.go"
+      - "jwtutil/jwt.go"
+    description: |
+      修复安全漏洞：sysmodel/types.go 中 DefaultAuthConfig 存在硬编码JWT Secret。
+      修复方案：
+      1. 读取 sysmodel/types.go 全文，找到 DefaultAuthConfig 定义
+      2. 将硬编码Secret改为从环境变量读取：
+         Secret = os.Getenv("JWT_SECRET")，若为空则panic（强制要求配置）
+         或者 Secret = getJWTSecret() 函数，从环境变量读取并验证长度>=32字符
+      3. 在 jwtutil/jwt.go 中，确认Secret不为空时才初始化，否则返回明确错误
+      注意：先读取文件再修改，保留其他所有配置不变，只修改Secret获取方式。
+
+  - task_id: "d6-w5-t2"
+    wave: 5
+    title: "实现密码安全策略与登录防护"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d6-w1-t1"]
+    files:
+      - "sysbuiltin/auth_service.go"
+      - "sysbuiltin/security_policy.go"
+    description: |
+      先读取 sysbuiltin/auth_service.go 全文，了解现有实现。
+      在此基础上增强安全策略：
+      1. 创建 sysbuiltin/security_policy.go：
+         - PasswordPolicy struct: MinLength(8), RequireUpper(true), RequireNumber(true), RequireSpecial(true)
+         - ValidatePassword(password string) error：校验密码复杂度
+         - LoginAttemptCache：内存map记录登录失败次数（key=username，value=struct{count,lastTime}）
+         - RecordLoginFailure(username string) int：记录失败次数，返回当前次数
+         - IsAccountLocked(username string) bool：失败次数>=5且最后失败时间<30分钟前则锁定
+         - ResetLoginAttempt(username string)：登录成功后重置
+         注意：LoginAttemptCache用sync.RWMutex保护
+      2. 修改 sysbuiltin/auth_service.go 的Login方法：
+         - 登录前检查 IsAccountLocked，若锁定返回"账户已锁定，请30分钟后重试"错误
+         - 登录失败调用 RecordLoginFailure
+         - 登录成功调用 ResetLoginAttempt
+         注意：先读取文件再修改，不影响其他已有方法。
+
+  - task_id: "d6-w5-t3"
+    wave: 5
+    title: "审计日志防篡改哈希链"
+    agent: gem-implementer
+    status: not-started
+    dependencies: []
+    files:
+      - "engine/audit_log_manager.go"
+    description: |
+      先读取 engine/audit_log_manager.go 全文，了解现有实现。
+      在Record方法中增加防篡改哈希：
+      1. 为审计日志记录添加 LogHash 字段（如果已有则跳过，否则在Record时计算）
+      2. 哈希计算：SHA256(前一条日志hash + 当前日志内容JSON)，链式哈希防篡改
+      3. 在AuditLog struct中添加 LogHash string 字段（如果struct在types/中则同步添加）
+      4. Record方法中：先查询最新一条日志的hash作为prevHash，计算当前记录的hash
+      5. 写入时一并写入hash字段
+      注意：先读取文件再修改，保持原有接口不变，仅在实现层增加hash计算。
+
+  - task_id: "d6-w5-t4"
+    wave: 5
+    title: "实现API限流中间件"
+    agent: gem-implementer
+    status: not-started
+    dependencies: []
+    files:
+      - "endpoint/http/middleware_ratelimit.go"
+    description: |
+      实现API限流中间件，防止接口滥用和DDoS攻击。
+      文件：endpoint/http/middleware_ratelimit.go
+      实现令牌桶限流：
+      - RateLimiter struct：使用sync.Map存储每个IP的令牌桶
+      - TokenBucket struct: tokens float64, lastRefill time.Time, mutex sync.Mutex
+      - NewRateLimiter(rate float64, capacity int) *RateLimiter（每秒rate个请求，容量capacity）
+      - Allow(clientIP string) bool：检查并消耗令牌
+      - RateLimitMiddleware(limiter *RateLimiter) gin.HandlerFunc（如果使用gin框架）
+        或者对应已有框架的中间件形式（先读取server.go了解框架类型）
+      限流触发时返回HTTP 429 Too Many Requests。
+      登录接口重点限流：每IP每分钟最多10次登录请求。
+      注意：先读取 endpoint/http/server.go 了解框架类型再实现中间件。
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 6: 前端功能实现
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d6-w6-t1"
+    wave: 6
+    title: "前端API封装-表单引擎"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d6-w4-t1"]
+    files:
+      - "web/src/api/form.ts"
+      - "web/src/types/form.ts"
+    description: |
+      1. web/src/types/form.ts：TypeScript类型定义
+         - FormDefinition interface (formId, formName, description, formSchema: Record<string,any>, version, status, createdBy, createdAt, updatedAt, deleted)
+         - FormInstance interface (instanceId, formId, formVersion, workflowInstanceId, nodeId, formData: Record<string,any>, status, createdBy)
+         - FormVersionHistory interface (id, formId, version, formSchema, changeLog, createdBy, createdAt)
+         - FormListParams interface (page, pageSize, status?)
+         - CreateFormRequest interface
+         - SaveFormInstanceRequest interface
+      2. web/src/api/form.ts：API封装
+         import request from '@/utils/request'
+         - getFormList(params: FormListParams)
+         - createForm(data: CreateFormRequest)
+         - getFormDetail(formId: string)
+         - updateForm(formId: string, data: Partial<FormDefinition>)
+         - publishForm(formId: string, changeLog: string)
+         - getFormVersions(formId: string)
+         - rollbackForm(formId: string, version: number)
+         - getFormInstance(instanceId: string)
+         - saveFormInstance(data: SaveFormInstanceRequest)
+
+  - task_id: "d6-w6-t2"
+    wave: 6
+    title: "前端API封装-高级审批与BI分析"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d6-w4-t2", "d6-w4-t3"]
+    files:
+      - "web/src/api/advanced_approval.ts"
+      - "web/src/api/analytics.ts"
+      - "web/src/types/analytics.ts"
+    description: |
+      1. web/src/api/advanced_approval.ts：高级审批API封装
+         - addSign(instanceId, nodeId, data)：加签
+         - transferApproval(instanceId, nodeId, data)：转签
+         - returnApproval(instanceId, data)：退回
+         - withdrawApproval(instanceId, data)：撤回
+         - setDelegate(data)：设置委托
+         - getDelegateList()：查询委托
+         - getCCList(params)：查询抄送列表
+         - markCCRead(id)：标记已读
+      2. web/src/types/analytics.ts：BI类型定义
+         - WorkflowOverviewStats interface
+         - StatsTrendData interface (dates: string[], series: {name:string, data:number[]}[])
+         - StatsQueryParams interface (startDate, endDate, workflowId?, userId?, groupBy?)
+      3. web/src/api/analytics.ts：BI API封装
+         - getWorkflowOverview()
+         - getWorkflowEfficiency(params: StatsQueryParams)
+         - getApprovalPerformance(params: StatsQueryParams)
+         - getInstanceTrend(params: StatsQueryParams)
+         - exportReport(params)
+
+  - task_id: "d6-w6-t3"
+    wave: 6
+    title: "前端API封装-插件管理与OAuth"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d6-w4-t4", "d6-w4-t5"]
+    files:
+      - "web/src/api/plugin.ts"
+      - "web/src/types/plugin.ts"
+    description: |
+      1. web/src/types/plugin.ts：插件类型定义
+         - PluginInfo interface (pluginId, pluginName, description, author, version, pluginType, status, isOfficial, downloadCount, rating)
+         - PluginConfig interface (pluginId, pluginVersion, config, status, installedAt)
+      2. web/src/api/plugin.ts：插件API封装
+         - getPluginMarketList(params)
+         - getPluginDetail(pluginId)
+         - installPlugin(data)
+         - getInstalledPlugins()
+         - enablePlugin(pluginId)
+         - disablePlugin(pluginId)
+         - uninstallPlugin(pluginId)
+         - updatePluginConfig(pluginId, config)
+
+  - task_id: "d6-w6-t4"
+    wave: 6
+    title: "前端页面-表单设计器"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d6-w6-t1"]
+    files:
+      - "web/src/views/FormDesigner.vue"
+      - "web/src/views/FormList.vue"
+      - "web/src/components/FormComponents.vue"
+    description: |
+      实现表单设计器前端页面（Vue3 + TypeScript + Element Plus）。
+      1. web/src/views/FormList.vue：表单列表页面
+         - 表格展示表单列表（名称、版本、状态、创建人、操作）
+         - 顶部：搜索栏（名称、状态筛选）+ "新建表单"按钮
+         - 操作列：查看、编辑、发布（草稿状态）、版本历史、删除（草稿状态）
+         - 分页控件
+      2. web/src/views/FormDesigner.vue：表单设计器页面（核心功能）
+         简化版实现（不需要完整的图形拖拽引擎）：
+         - 左侧：组件面板（基础组件列表：输入框、数字、选择、日期、开关）
+         - 中间：画布区域，点击组件面板组件添加到画布，JSON Schema编辑器（textarea展示JSON）
+         - 右侧：属性面板（当前选中组件的属性配置：label、required、placeholder等）
+         - 顶部：保存、发布按钮
+         Note：核心是能够生成正确的JSON Schema并保存到后端，视觉精美度次之。
+         使用 <el-form> + 动态组件渲染方式实现。
+      3. web/src/components/FormComponents.vue：表单组件渲染器
+         根据formSchema JSON动态渲染表单组件（用于审批表单的填写）。
+
+  - task_id: "d6-w6-t5"
+    wave: 6
+    title: "前端页面-BI数据分析大屏"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d6-w6-t2"]
+    files:
+      - "web/src/views/AnalyticsDashboard.vue"
+      - "web/src/views/ApprovalReport.vue"
+    description: |
+      实现BI数据分析前端页面（使用ECharts，如果已安装，否则使用CSS折线图模拟）。
+      先检查 web/package.json 是否已有echarts依赖，若无则用简单的数字卡片展示。
+      1. web/src/views/AnalyticsDashboard.vue：运营概览大屏
+         - 顶部：4个指标卡片（流程定义总数、实例总数、月新增、通过率）
+         - 中间：流程实例趋势折线图（时间范围选择器：近7天/近30天）
+         - 下方：两列布局，左：流程效率分析表格，右：审批绩效排名
+         - 数据刷新按钮
+      2. web/src/views/ApprovalReport.vue：审批绩效报表页面
+         - 顶部：时间范围选择 + 用户/部门筛选
+         - 表格：用户、审批数、通过数、驳回数、平均时长、及时率
+         - 导出CSV按钮
+
+  - task_id: "d6-w6-t6"
+    wave: 6
+    title: "前端页面-插件市场与审批扩展"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d6-w6-t3"]
+    files:
+      - "web/src/views/PluginMarket.vue"
+      - "web/src/views/InstalledPlugins.vue"
+    description: |
+      1. web/src/views/PluginMarket.vue：插件市场页面
+         - 卡片网格布局展示插件（名称、描述、作者、版本、类型、评分、安装按钮）
+         - 顶部：搜索框 + 类型筛选（节点插件、连接器、通知插件）
+         - 安装按钮点击后弹窗配置插件参数
+      2. web/src/views/InstalledPlugins.vue：已安装插件管理页面
+         - 表格：插件名、类型、版本、状态、操作（启用/停用/卸载/配置）
+         - 状态标签：已启用（绿）、已停用（红）
+         - 配置按钮弹出JSON编辑器
+
+  - task_id: "d6-w6-t7"
+    wave: 6
+    title: "前端路由注册与导航配置"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d6-w6-t4", "d6-w6-t5", "d6-w6-t6"]
+    files:
+      - "web/src/router/index.ts"
+    description: |
+      先读取 web/src/router/index.ts 全文，了解现有路由配置。
+      在现有路由基础上新增以下路由（懒加载方式）：
+      - { path: '/form/list', name: 'FormList', component: () => import('@/views/FormList.vue'), meta: { title: '表单管理', requiresAuth: true } }
+      - { path: '/form/designer/:id?', name: 'FormDesigner', component: () => import('@/views/FormDesigner.vue'), meta: { title: '表单设计器', requiresAuth: true } }
+      - { path: '/analytics', name: 'AnalyticsDashboard', component: () => import('@/views/AnalyticsDashboard.vue'), meta: { title: '数据分析', requiresAuth: true } }
+      - { path: '/analytics/approval-report', name: 'ApprovalReport', component: () => import('@/views/ApprovalReport.vue'), meta: { title: '审批绩效报表', requiresAuth: true } }
+      - { path: '/plugin/market', name: 'PluginMarket', component: () => import('@/views/PluginMarket.vue'), meta: { title: '插件市场', requiresAuth: true } }
+      - { path: '/plugin/installed', name: 'InstalledPlugins', component: () => import('@/views/InstalledPlugins.vue'), meta: { title: '已安装插件', requiresAuth: true } }
+      注意：保持原有路由不变，仅追加新路由。
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 7: 引擎集成与依赖注入
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d6-w7-t1"
+    wave: 7
+    title: "引擎服务注册与依赖注入"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d6-w3-t1", "d6-w3-t2", "d6-w3-t3", "d6-w3-t4", "d6-w3-t5", "d6-w4-t1", "d6-w4-t2", "d6-w4-t3", "d6-w4-t4", "d6-w4-t5"]
+    files:
+      - "engine/server.go"
+      - "engine/engine.go"
+    description: |
+      先读取 engine/server.go 和 engine/engine.go 全文，了解现有服务注册方式。
+      在现有基础上注册D6新增服务：
+      1. 在Engine/Server结构体或初始化函数中添加新服务字段：
+         - FormService interfaces.FormService
+         - AdvancedApprovalService interfaces.AdvancedApprovalService
+         - AnalyticsService interfaces.AnalyticsService
+         - PluginService interfaces.PluginService
+         - OAuthService interfaces.OAuthService
+      2. 在服务初始化部分（NewEngine或类似函数），创建各服务实例：
+         - 创建对应的Repository实例（传入数据库连接）
+         - 创建Service实例（传入Repository）
+         - 将Service注入到HTTP服务器
+      3. 在HTTP路由注册部分，调用新增的路由注册方法：
+         - server.registerFormRoutes(v1Group)
+         - server.registerAdvancedApprovalRoutes(v1Group)
+         - server.registerStatsRoutes(v1Group)
+         - server.registerPluginRoutes(v1Group)
+         - server.registerOAuthRoutes(group)
+      注意：只增量扩展，不删除或修改已有服务注册代码。

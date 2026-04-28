@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"database/sql"
 	"fmt"
 	"net"
 
@@ -10,8 +11,24 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/zhiyunliu/distributed-workflow/interfaces"
+	"github.com/zhiyunliu/distributed-workflow/plugin"
 	"github.com/zhiyunliu/distributed-workflow/rpc"
+	"github.com/zhiyunliu/distributed-workflow/storage/sqlserver"
 )
+
+// dbProvider 定义了能够暴露底层 *sql.DB 的 repository 接口，供 D6 子仓库复用
+type dbProvider interface {
+	DB() *sql.DB
+}
+
+// D6ServiceInjector 定义了 HTTP 服务器注入 D6 服务的接口，避免 engine 直接依赖 endpoint/http
+type D6ServiceInjector interface {
+	SetD6FormService(interfaces.FormService)
+	SetD6ApprovalService(interfaces.AdvancedApprovalService)
+	SetD6AnalyticsService(interfaces.AnalyticsService)
+	SetD6PluginService(interfaces.PluginService)
+	SetD6OAuthService(interfaces.OAuthService)
+}
 
 // Config 引擎配置
 type Config struct {
@@ -37,6 +54,13 @@ type Engine struct {
 	auditSvc    interfaces.AuditLogService
 	endpointMgr interfaces.EndpointManagerService
 	templateSvc interfaces.TemplateService
+
+	// D6 组件
+	formSvc        interfaces.FormService
+	advApprovalSvc interfaces.AdvancedApprovalService
+	analyticsSvc   interfaces.AnalyticsService
+	pluginSvc      interfaces.PluginService
+	oauthSvc       interfaces.OAuthService
 }
 
 // New 创建引擎实例
@@ -85,6 +109,26 @@ func New(
 	grpcServer := grpc.NewServer()
 	engineSrv.RegisterServer(grpcServer)
 
+	// D6 组件（需要底层 *sql.DB；若 repo 实现了 dbProvider 则自动初始化）
+	var (
+		formSvc        interfaces.FormService
+		advApprovalSvc interfaces.AdvancedApprovalService
+		analyticsSvc   interfaces.AnalyticsService
+		pluginSvc      interfaces.PluginService
+		oauthSvc       interfaces.OAuthService
+	)
+	if dbProv, ok := repo.(dbProvider); ok {
+		db := dbProv.DB()
+		pluginRegistry := plugin.NewPluginRegistry()
+		formSvc = NewFormService(sqlserver.NewFormRepository(db))
+		advApprovalSvc = NewAdvancedApprovalService(sqlserver.NewAdvancedApprovalRepository(db))
+		analyticsSvc = NewAnalyticsService(sqlserver.NewAnalyticsRepository(db))
+		pluginSvc = NewPluginService(sqlserver.NewPluginRepository(db), pluginRegistry)
+		oauthSvc = NewOAuthService(sqlserver.NewOAuthRepository(db))
+	} else {
+		log.Warn().Msg("repo 未实现 dbProvider，D6 服务将不可用")
+	}
+
 	return &Engine{
 		cfg:        cfg,
 		grpcServer: grpcServer,
@@ -101,6 +145,13 @@ func New(
 		auditSvc:    auditSvc,
 		endpointMgr: endpointMgr,
 		templateSvc: templateSvc,
+
+		// D6
+		formSvc:        formSvc,
+		advApprovalSvc: advApprovalSvc,
+		analyticsSvc:   analyticsSvc,
+		pluginSvc:      pluginSvc,
+		oauthSvc:       oauthSvc,
 	}
 }
 
@@ -132,6 +183,51 @@ func (e *Engine) EndpointManagerService() interfaces.EndpointManagerService {
 // TemplateService 暴露模板服务（D5）
 func (e *Engine) TemplateService() interfaces.TemplateService {
 	return e.templateSvc
+}
+
+// FormService 暴露表单服务（D6）
+func (e *Engine) FormService() interfaces.FormService {
+	return e.formSvc
+}
+
+// AdvancedApprovalService 暴露高级审批服务（D6）
+func (e *Engine) AdvancedApprovalService() interfaces.AdvancedApprovalService {
+	return e.advApprovalSvc
+}
+
+// AnalyticsService 暴露 BI 统计服务（D6）
+func (e *Engine) AnalyticsService() interfaces.AnalyticsService {
+	return e.analyticsSvc
+}
+
+// PluginService 暴露插件管理服务（D6）
+func (e *Engine) PluginService() interfaces.PluginService {
+	return e.pluginSvc
+}
+
+// OAuthService 暴露 OAuth 服务（D6）
+func (e *Engine) OAuthService() interfaces.OAuthService {
+	return e.oauthSvc
+}
+
+// InjectD6Services 将 D6 服务注入支持 D6ServiceInjector 接口的 HTTP 服务器并注册路由。
+// 调用方示例：eng.InjectD6Services(httpServer)
+func (e *Engine) InjectD6Services(injector D6ServiceInjector) {
+	if e.formSvc != nil {
+		injector.SetD6FormService(e.formSvc)
+	}
+	if e.advApprovalSvc != nil {
+		injector.SetD6ApprovalService(e.advApprovalSvc)
+	}
+	if e.analyticsSvc != nil {
+		injector.SetD6AnalyticsService(e.analyticsSvc)
+	}
+	if e.pluginSvc != nil {
+		injector.SetD6PluginService(e.pluginSvc)
+	}
+	if e.oauthSvc != nil {
+		injector.SetD6OAuthService(e.oauthSvc)
+	}
 }
 
 // Start 启动引擎：监听 gRPC 端口 + 恢复未完成实例 + 启动健康检查

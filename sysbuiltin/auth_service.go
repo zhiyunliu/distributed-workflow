@@ -32,13 +32,15 @@ func NewAuthService(
 	menuRepo sysrepo.MenuRepo,
 	cfg sysmodel.AuthConfig,
 ) sysmanager.AuthService {
-	if cfg.Secret == "" {
-		cfg.Secret = sysmodel.DefaultAuthConfig.Secret
-	}
 	if cfg.ExpireHours <= 0 {
 		cfg.ExpireHours = sysmodel.DefaultAuthConfig.ExpireHours
 	}
 	return &authService{userRepo: userRepo, roleRepo: roleRepo, menuRepo: menuRepo, cfg: cfg}
+}
+
+// resolveSecret 获取有效JWT密钥，优先使用配置，其次环境变量 JWT_SECRET
+func (s *authService) resolveSecret() (string, error) {
+	return jwtutil.ResolveSecret(s.cfg.Secret)
 }
 
 func (s *authService) Login(ctx context.Context, req *sysmodel.LoginRequest) (*sysmodel.LoginResponse, error) {
@@ -46,11 +48,17 @@ func (s *authService) Login(ctx context.Context, req *sysmodel.LoginRequest) (*s
 		return nil, errors.New("用户名和密码不能为空")
 	}
 
+	// 检查账号是否被锁定
+	if GlobalLoginTracker.IsLocked(req.Username) {
+		return nil, errors.New("账号已被锁定，请15分钟后重试")
+	}
+
 	user, err := s.userRepo.GetByUsername(ctx, req.Username)
 	if err != nil {
 		return nil, fmt.Errorf("查询用户失败: %w", err)
 	}
 	if user == nil {
+		GlobalLoginTracker.RecordFailedAttempt(req.Username)
 		return nil, errors.New("用户名或密码错误")
 	}
 	if user.Status == 0 {
@@ -58,7 +66,13 @@ func (s *authService) Login(ctx context.Context, req *sysmodel.LoginRequest) (*s
 	}
 
 	if err = bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
+		GlobalLoginTracker.RecordFailedAttempt(req.Username)
 		return nil, errors.New("用户名或密码错误")
+	}
+
+	secret, err := s.resolveSecret()
+	if err != nil {
+		return nil, err
 	}
 
 	expireSeconds := int64(s.cfg.ExpireHours) * 3600
@@ -68,10 +82,12 @@ func (s *authService) Login(ctx context.Context, req *sysmodel.LoginRequest) (*s
 		IssuedAt: time.Now().Unix(),
 		ExpireAt: time.Now().Unix() + expireSeconds,
 	}
-	token, err := jwtutil.Sign(claims, s.cfg.Secret)
+	token, err := jwtutil.Sign(claims, secret)
 	if err != nil {
 		return nil, fmt.Errorf("签发token失败: %w", err)
 	}
+
+	GlobalLoginTracker.RecordSuccessAttempt(req.Username)
 
 	roles, err := s.roleRepo.GetRolesByUserID(ctx, user.ID)
 	if err != nil {
@@ -100,7 +116,11 @@ func (s *authService) Logout(_ context.Context, _ string) error {
 }
 
 func (s *authService) ValidateToken(ctx context.Context, token string) (*sysmodel.SystemUser, error) {
-	claims, err := jwtutil.Parse(token, s.cfg.Secret)
+	secret, err := s.resolveSecret()
+	if err != nil {
+		return nil, err
+	}
+	claims, err := jwtutil.Parse(token, secret)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +136,11 @@ func (s *authService) ValidateToken(ctx context.Context, token string) (*sysmode
 }
 
 func (s *authService) RefreshToken(ctx context.Context, token string) (*sysmodel.LoginResponse, error) {
-	claims, err := jwtutil.Parse(token, s.cfg.Secret)
+	secret, err := s.resolveSecret()
+	if err != nil {
+		return nil, err
+	}
+	claims, err := jwtutil.Parse(token, secret)
 	if err != nil {
 		// token 过期时仍允许刷新（5分钟宽限期）
 		if !errors.Is(err, jwtutil.ErrTokenExpired) {
@@ -138,7 +162,7 @@ func (s *authService) RefreshToken(ctx context.Context, token string) (*sysmodel
 		IssuedAt: time.Now().Unix(),
 		ExpireAt: time.Now().Unix() + expireSeconds,
 	}
-	newToken, err := jwtutil.Sign(newClaims, s.cfg.Secret)
+	newToken, err := jwtutil.Sign(newClaims, secret)
 	if err != nil {
 		return nil, err
 	}

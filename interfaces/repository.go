@@ -94,6 +94,8 @@ type WorkflowRepository interface {
 	GetAuditLog(logID string) (*types.WorkflowAuditLog, error)
 	// ArchiveAuditLogs 归档指定时间之前的审计日志
 	ArchiveAuditLogs(beforeTime time.Time) error
+	// GetLatestAuditLog 获取最新一条审计日志（用于哈希链初始化，D6新增）
+	GetLatestAuditLog() (*types.WorkflowAuditLog, error)
 
 	// ─── 审批记录（D3新增） ──────────────────────────────────────────
 	// CreateApprovalRecord 创建审批记录

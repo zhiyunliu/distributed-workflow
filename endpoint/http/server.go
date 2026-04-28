@@ -22,8 +22,15 @@ type Server struct {
 	// D4: 系统管理
 	sysMgr    sysmanager.Manager
 	jwtSecret string
-	engine    *gin.Engine
-	server    *http.Server
+	// D6: 表单引擎 & 高级审批
+	formSvc        interfaces.FormService
+	advApprovalSvc interfaces.AdvancedApprovalService
+	// D6: BI统计、插件管理、OAuth登录
+	analyticsSvc interfaces.AnalyticsService
+	pluginSvc    interfaces.PluginService
+	oauthSvc     interfaces.OAuthService
+	engine       *gin.Engine
+	server       *http.Server
 }
 
 // NewServer 创建 HTTP 服务器
@@ -31,6 +38,7 @@ func NewServer(svc interfaces.WorkflowService) *Server {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
+	r.Use(RateLimitMiddleware(newDefaultRateLimiter()))
 
 	s := &Server{svc: svc, engine: r}
 	s.registerRoutes(r)

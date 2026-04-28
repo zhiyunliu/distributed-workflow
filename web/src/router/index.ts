@@ -72,6 +72,51 @@ const router = createRouter({
           component: () => import('@/views/audit/AuditLog.vue'),
           meta: { title: '审计日志', icon: 'Document' },
         },
+        // ── 表单管理 ──────────────────────────────────────────────────
+        {
+          path: 'forms',
+          name: 'FormList',
+          component: () => import('@/views/FormList.vue'),
+          meta: { title: '表单管理', icon: 'Tickets' },
+        },
+        {
+          path: 'forms/designer',
+          name: 'FormDesigner',
+          component: () => import('@/views/FormDesigner.vue'),
+          meta: { title: '表单设计器', icon: 'Edit' },
+        },
+        {
+          path: 'forms/designer/:formId',
+          name: 'FormDesignerEdit',
+          component: () => import('@/views/FormDesigner.vue'),
+          meta: { title: '表单设计器', icon: 'Edit' },
+        },
+        // ── 数据分析 ──────────────────────────────────────────────────
+        {
+          path: 'analytics',
+          name: 'AnalyticsDashboard',
+          component: () => import('@/views/AnalyticsDashboard.vue'),
+          meta: { title: '数据分析', icon: 'DataAnalysis' },
+        },
+        {
+          path: 'analytics/approval-report',
+          name: 'ApprovalReport',
+          component: () => import('@/views/ApprovalReport.vue'),
+          meta: { title: '审批报表', icon: 'PieChart' },
+        },
+        // ── 插件管理 ──────────────────────────────────────────────────
+        {
+          path: 'plugins',
+          name: 'PluginMarket',
+          component: () => import('@/views/PluginMarket.vue'),
+          meta: { title: '插件市场', icon: 'Shop' },
+        },
+        {
+          path: 'plugins/installed',
+          name: 'InstalledPlugins',
+          component: () => import('@/views/InstalledPlugins.vue'),
+          meta: { title: '已安装插件', icon: 'SetUp' },
+        },
         // ── 系统管理 ──────────────────────────────────────────────────
         {
           path: 'system/user',

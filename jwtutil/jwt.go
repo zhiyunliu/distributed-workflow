@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 )
@@ -28,6 +29,19 @@ type Claims struct {
 }
 
 var header = base64URLEncode([]byte(`{"alg":"HS256","typ":"JWT"}`))
+
+// ResolveSecret 获取有效JWT密钥
+// 优先使用 configured，若为空则从环境变量 JWT_SECRET 读取
+// 若两者均为空则返回错误（禁止使用空密钥）
+func ResolveSecret(configured string) (string, error) {
+	if configured != "" {
+		return configured, nil
+	}
+	if env := os.Getenv("JWT_SECRET"); env != "" {
+		return env, nil
+	}
+	return "", errors.New("JWT 密钥未配置：请在配置文件设置 secret 或通过 JWT_SECRET 环境变量提供")
+}
 
 // Sign 签发 JWT
 func Sign(claims Claims, secret string) (string, error) {

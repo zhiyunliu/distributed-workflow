@@ -137,8 +137,9 @@ type AuthConfig struct {
 }
 
 // DefaultAuthConfig 默认认证配置
+// Secret 必须通过配置文件或环境变量 JWT_SECRET 提供，禁止硬编码
 var DefaultAuthConfig = AuthConfig{
 	Type:        "builtin",
-	Secret:      "distributed-workflow-default-secret-change-me",
+	Secret:      "", // 请通过配置文件或 JWT_SECRET 环境变量设置
 	ExpireHours: 24,
 }
