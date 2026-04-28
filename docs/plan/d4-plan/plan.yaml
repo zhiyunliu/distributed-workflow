@@ -1,0 +1,438 @@
+plan_id: "20260428-d4-visual-management"
+plan_objective: "D4阶段 可视化管理前端 — 系统管理抽象层、Vue3前端、LogicFlow流程设计器、实例监控、审批工作台"
+complexity: complex
+created_at: "2026-04-28"
+target_version: "v0.8.0"
+depends_on: "20260428-d3-advanced-nodes"
+
+tldr: |
+  D4 阶段分 5 个 Wave 顺序推进：
+  Wave 1 并行完成 D4 后端数据模型、数据库 Schema、系统管理接口定义；
+  Wave 2 并行实现内置用户/角色/菜单/认证/权限服务（sysbuiltin）+ SQL Server 仓库层；
+  Wave 3 并行实现系统管理 HTTP API（server_d4.go）和流程管理 HTTP API（server_d4_workflow.go）；
+  Wave 4 并行完成前端工程（src/api、src/stores、src/router、src/layouts、src/views系统管理模块）；
+  Wave 5 并行完成前端流程管理页面（WorkflowDesigner/WorkflowList/InstanceMonitor/ApprovalWorkbench/EndpointManagement/AuditLogs）。
+  D4 全面覆盖 RBAC 权限控制，JWT 统一鉴权，前端权限菜单、路由守卫。
+
+open_questions:
+  - sysbuiltin 密码存储使用 bcrypt 还是 SHA-256+salt？建议 bcrypt（cost=12）
+  - 菜单树应为平铺列表（前端自行构建树）还是服务端返回嵌套树？建议服务端返回嵌套树减少前端计算
+  - LogicFlow 版本与 Vue3 的兼容性，是否需要封装 useLogicFlow composable？
+
+pre_mortem:
+  overall_risk_level: medium
+  critical_failure_modes:
+    - scenario: sysbuiltin 实现与 sysmanager 接口定义不匹配，编译错误
+      likelihood: low
+      impact: high
+      mitigation: 每个 service 实现文件添加编译时 var _ interfaces.XxxService = (*xxxService)(nil) 断言
+    - scenario: LogicFlow 在复杂流程（100+ 节点）中性能下降，前端卡顿
+      likelihood: medium
+      impact: medium
+      mitigation: 流程设计器使用虚拟滚动、节点懒渲染，限制单流程最大节点数 200
+    - scenario: JWT token 过期后前端请求失败，用户体验差
+      likelihood: low
+      impact: medium
+      mitigation: axios 拦截器捕获 401，自动调用 refreshToken；refreshToken 失败跳转登录页
+
+implementation_specification:
+  new_tables:
+    - sys_users: (id BIGINT IDENTITY PK, username VARCHAR(64) UNIQUE NOT NULL, password_hash VARCHAR(256) NOT NULL, real_name VARCHAR(64), email VARCHAR(128), phone VARCHAR(32), avatar VARCHAR(512), status INT DEFAULT 1, dept_id BIGINT DEFAULT 0, create_time DATETIME2, update_time DATETIME2, deleted BIT DEFAULT 0)
+    - sys_roles: (id BIGINT IDENTITY PK, role_name VARCHAR(64) NOT NULL, role_code VARCHAR(64) UNIQUE NOT NULL, description NVARCHAR(256), status INT DEFAULT 1, data_scope INT DEFAULT 1, create_time DATETIME2, update_time DATETIME2, deleted BIT DEFAULT 0)
+    - sys_menus: (id BIGINT IDENTITY PK, parent_id BIGINT DEFAULT 0, menu_name VARCHAR(128) NOT NULL, menu_type CHAR(1) DEFAULT 'C', path VARCHAR(256), component VARCHAR(256), perms VARCHAR(256), icon VARCHAR(128), sort_order INT DEFAULT 0, visible INT DEFAULT 1, create_time DATETIME2, update_time DATETIME2)
+    - sys_user_roles: (user_id BIGINT NOT NULL, role_id BIGINT NOT NULL, PRIMARY KEY(user_id, role_id))
+    - sys_role_menus: (role_id BIGINT NOT NULL, menu_id BIGINT NOT NULL, PRIMARY KEY(role_id, menu_id))
+    - sys_dict: (id BIGINT IDENTITY PK, dict_type VARCHAR(128) UNIQUE NOT NULL, dict_name VARCHAR(128) NOT NULL, status INT DEFAULT 1, create_time DATETIME2)
+    - sys_dict_items: (id BIGINT IDENTITY PK, dict_type VARCHAR(128) NOT NULL, dict_label NVARCHAR(128) NOT NULL, dict_value VARCHAR(256) NOT NULL, sort_order INT DEFAULT 0, status INT DEFAULT 1)
+
+tasks:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 1: 数据模型 + 接口定义 + 数据库 Schema
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d4-w1-t1"
+    wave: 1
+    title: "系统管理数据模型定义"
+    agent: gem-implementer
+    status: not-started
+    dependencies: []
+    files:
+      - "sysmodel/types.go"
+    description: |
+      在 sysmodel/types.go 中定义系统管理数据模型（含 JSON 标签）：
+      1. SystemUser {ID int64, Username, RealName, Email, Phone, Avatar string, Status int, DeptID int64, CreateTime time.Time, Extra map[string]interface{}}
+      2. UserFilter {Username, RealName string, Status *int, DeptID *int64}
+      3. SystemRole {ID int64, RoleName, RoleCode, Description string, Status int, DataScope int, CreateTime time.Time}
+      4. RoleFilter {RoleName string, Status *int}
+      5. SystemMenu {ID, ParentID int64, MenuName, MenuType, Path, Component, Perms, Icon string, Sort int, Visible int, Children []*SystemMenu}
+      6. MenuFilter {MenuName string, Status *int}
+      7. LoginRequest {Username, Password string, GrantType string, Extra map[string]interface{}}
+      8. LoginResponse {Token string, ExpiresIn int64, User *SystemUser, Roles []*SystemRole, Perms []string}
+      9. SystemDict {ID int64, DictType, DictName string, Status int, CreateTime time.Time}
+      10. SystemDictItem {ID int64, DictType, DictLabel, DictValue string, SortOrder int, Status int}
+      11. DefaultAuthConfig {Secret string `json:"secret"` default:""} — Secret 必须通过环境变量 JWT_SECRET 注入，不能有默认硬编码值
+      12. PageResult[T any] {Records []T, Total int64, Page int, PageSize int}
+
+  - task_id: "d4-w1-t2"
+    wave: 1
+    title: "系统管理服务接口定义"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d4-w1-t1"]
+    files:
+      - "sysmanager/interfaces.go"
+    description: |
+      在 sysmanager/interfaces.go 中定义系统管理服务接口（全部使用 sysmodel 类型）：
+      1. UserService 接口：GetUserByID/GetUserByUsername/ListUsers/CreateUser/UpdateUser/DeleteUser/GetUserRoles/GetUserPermissions
+      2. RoleService 接口：GetRoleByID/GetRoleByCode/ListRoles/CreateRole/UpdateRole/DeleteRole/GetRoleMenus/AssignRoleMenus/AssignUserRoles/GetUsersByRole
+      3. MenuService 接口：GetMenuByID/ListMenus/GetMenuTree/GetUserMenuTree/CreateMenu/UpdateMenu/DeleteMenu
+      4. AuthService 接口：Login/Logout/ValidateToken/RefreshToken/ChangePassword
+      5. PermissionService 接口：HasPermission(ctx, userID int64, permCode string) bool / GetUserDataScope(ctx, userID int64) int / CheckMenuAccess(ctx, userID int64, menuID int64) bool
+      6. DictService 接口：GetDictItems/CreateDict/UpdateDict/DeleteDict/CreateDictItem/UpdateDictItem/DeleteDictItem/ListDicts
+      不引入任何实现代码
+
+  - task_id: "d4-w1-t3"
+    wave: 1
+    title: "D4 数据库 Schema"
+    agent: gem-implementer
+    status: not-started
+    dependencies: []
+    files:
+      - "storage/sqlserver/schema_d4.sql"
+    description: |
+      创建 storage/sqlserver/schema_d4.sql，包含 D4 所有 DDL（幂等 IF NOT EXISTS 风格）：
+      1. sys_users 表（见 implementation_specification.new_tables）
+      2. sys_roles 表
+      3. sys_menus 表
+      4. sys_user_roles 关联表
+      5. sys_role_menus 关联表
+      6. sys_dict 字典类型表
+      7. sys_dict_items 字典项表
+      8. 创建关键索引：idx_sys_users_username, idx_sys_roles_code, idx_sys_dict_type, idx_dict_items_type
+      9. 插入初始数据（MERGE 幂等）：
+         - 管理员账号（username=admin，密码哈希需通过 bcrypt 生成，注释说明）
+         - 超管角色（role_code=SUPER_ADMIN）
+         - 菜单基础数据（目录：系统管理、流程管理、审批管理、监控中心）
+
+  - task_id: "d4-w1-t4"
+    wave: 1
+    title: "系统管理 Repository 接口定义"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d4-w1-t1"]
+    files:
+      - "sysrepo/interfaces.go"
+    description: |
+      在 sysrepo/interfaces.go 中定义系统管理 Repository 接口：
+      1. UserRepository：GetByID/GetByUsername/List/Create/Update/Delete/GetRoleIDs/AssignRoles
+      2. RoleRepository：GetByID/GetByCode/List/Create/Update/Delete/GetMenuIDs/AssignMenus/GetUserIDs
+      3. MenuRepository：GetByID/List/Create/Update/Delete
+      4. DictRepository：GetDictItems/CreateDict/UpdateDict/DeleteDict/CreateDictItem/UpdateDictItem/DeleteDictItem/ListDicts
+      全部使用 sysmodel 中的类型，不依赖任何实现
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 2: 内置实现层
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d4-w2-t1"
+    wave: 2
+    title: "SQL Server 系统管理 Repository 实现"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d4-w1-t3", "d4-w1-t4"]
+    files:
+      - "syssqlserver/repository.go"
+    description: |
+      实现 sysrepo 中所有 Repository 接口，文件 syssqlserver/repository.go：
+      - SysRepository struct {db *sql.DB}
+      - NewSysRepository(db *sql.DB) *SysRepository
+      - 实现 UserRepository 全部方法：
+        * List：支持 UserFilter 条件查询（username LIKE, status =, dept_id =），分页（OFFSET/FETCH NEXT）
+        * Create：INSERT sys_users，password_hash 由调用方（AuthService）提供
+        * GetByUsername：SELECT WHERE username = @p1 AND deleted=0
+      - 实现 RoleRepository 全部方法：
+        * AssignMenus：事务内先 DELETE sys_role_menus WHERE role_id=@p1，再批量 INSERT
+        * AssignRoles（user-role）：事务内先 DELETE sys_user_roles WHERE user_id=@p1，再批量 INSERT
+      - 实现 MenuRepository 全部方法
+      - 实现 DictRepository 全部方法
+      所有查询使用参数化语句，不拼接 SQL 字符串
+      编译时断言：var _ sysrepo.UserRepository = (*SysRepository)(nil) 等
+
+  - task_id: "d4-w2-t2"
+    wave: 2
+    title: "内置用户/角色/菜单/字典服务实现"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d4-w2-t1", "d4-w1-t2"]
+    files:
+      - "sysbuiltin/user_service.go"
+      - "sysbuiltin/role_service.go"
+      - "sysbuiltin/menu_service.go"
+      - "sysbuiltin/dict_service.go"
+    description: |
+      在 sysbuiltin/ 目录下实现各服务（注意：已存在文件中只扩展新方法，不覆盖已有逻辑）：
+      1. user_service.go — 实现 sysmanager.UserService 接口
+         * ListUsers 委托 repo，支持分页
+         * CreateUser 验证用户名唯一性，委托 repo
+         * GetUserPermissions：查询用户角色，再查询角色菜单的 perms 字段，去重返回
+      2. role_service.go — 实现 sysmanager.RoleService 接口
+         * AssignRoleMenus：校验 menuIDs 合法性，委托 repo
+      3. menu_service.go — 实现 sysmanager.MenuService 接口
+         * GetMenuTree：查询全量菜单，递归构建 Children 树
+         * GetUserMenuTree：查询用户有权限的菜单 ID 列表，再过滤全量菜单构建树
+      4. dict_service.go — 实现 sysmanager.DictService 接口
+      编译时断言（每个文件底部）：var _ sysmanager.XxxService = (*xxxService)(nil)
+
+  - task_id: "d4-w2-t3"
+    wave: 2
+    title: "内置认证服务实现"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d4-w2-t1", "d4-w1-t2"]
+    files:
+      - "sysbuiltin/auth_service.go"
+      - "sysbuiltin/permission_service.go"
+    description: |
+      1. auth_service.go — 实现 sysmanager.AuthService 接口（注意：已有文件中已有登录锁定逻辑，此处扩展补全）：
+         * Login：通过 userRepo.GetByUsername 查用户，bcrypt.CompareHashAndPassword 验证密码，生成 JWT token（调用 jwtutil）
+         * ValidateToken：解析 JWT，返回 SystemUser（通过 userRepo.GetByID 补全用户信息）
+         * RefreshToken：验证旧 token 有效性，生成新 token
+         * ChangePassword：验证旧密码，bcrypt.GenerateFromPassword 生成新哈希，更新 sys_users
+         * Logout：将 token 加入 Redis 黑名单（key=token_blacklist:{tokenID}, TTL=token剩余有效期）
+      2. permission_service.go — 实现 sysmanager.PermissionService 接口：
+         * HasPermission：查询用户权限列表，检查是否包含目标 permCode；超管角色直接返回 true
+         * GetUserDataScope：查询用户角色的最大 data_scope（min 值=最宽权限）
+      编译时断言：var _ sysmanager.AuthService = (*AuthService)(nil)
+
+  - task_id: "d4-w2-t4"
+    wave: 2
+    title: "sysbuiltin Manager 与服务注册"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d4-w2-t2", "d4-w2-t3"]
+    files:
+      - "sysbuiltin/manager.go"
+    description: |
+      sysbuiltin/manager.go 已存在，补全以下逻辑：
+      - Manager struct 包含所有服务字段：UserSvc, RoleSvc, MenuSvc, AuthSvc, PermSvc, DictSvc
+      - NewManager(db *sql.DB) *Manager：创建所有 Repository 和 Service，注入依赖
+      - GetUserService / GetRoleService / GetMenuService / GetAuthService / GetPermissionService / GetDictService 方法
+      - 对外暴露统一的 Manager，供 HTTP Server 注入使用
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 3: HTTP API 层
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d4-w3-t1"
+    wave: 3
+    title: "系统管理 HTTP API"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d4-w2-t4"]
+    files:
+      - "endpoint/http/server_d4.go"
+    description: |
+      参考 server.go 注册系统管理 REST API（已有 server_d4.go 则扩展新方法）：
+      认证 API：
+      - POST /api/auth/login    — 用户登录，返回 token
+      - POST /api/auth/logout   — 用户登出
+      - POST /api/auth/refresh  — token 刷新
+      - GET  /api/auth/info     — 获取当前用户信息（含菜单权限）
+      - POST /api/auth/password — 修改密码
+      用户管理 API（需 JWT + 权限校验）：
+      - GET    /api/sys/users           — 用户列表（分页）
+      - POST   /api/sys/users           — 创建用户
+      - GET    /api/sys/users/:id       — 用户详情
+      - PUT    /api/sys/users/:id       — 更新用户
+      - DELETE /api/sys/users/:id       — 删除用户
+      - POST   /api/sys/users/:id/roles — 分配角色
+      角色管理 API：
+      - GET    /api/sys/roles           — 角色列表
+      - POST   /api/sys/roles           — 创建角色
+      - PUT    /api/sys/roles/:id       — 更新角色
+      - DELETE /api/sys/roles/:id       — 删除角色
+      - POST   /api/sys/roles/:id/menus — 分配菜单
+      菜单管理 API：
+      - GET    /api/sys/menus           — 菜单树
+      - POST   /api/sys/menus           — 创建菜单
+      - PUT    /api/sys/menus/:id       — 更新菜单
+      - DELETE /api/sys/menus/:id       — 删除菜单
+      字典 API：
+      - GET    /api/sys/dicts           — 字典类型列表
+      - GET    /api/sys/dicts/:type/items — 字典项列表
+      所有 API（登录除外）通过 JWT 中间件验证，401 时返回统一错误格式
+
+  - task_id: "d4-w3-t2"
+    wave: 3
+    title: "流程管理 HTTP API 扩展"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d4-w2-t4"]
+    files:
+      - "endpoint/http/server_d4_workflow.go"
+    description: |
+      在已有 server_d4_workflow.go 基础上补充 D4 所需的工作流管理 API：
+      流程定义管理 API：
+      - GET    /api/workflows             — 流程定义列表（支持 name/status 过滤，分页）
+      - POST   /api/workflows             — 创建流程定义
+      - GET    /api/workflows/:id         — 流程定义详情（含节点和连线）
+      - PUT    /api/workflows/:id         — 更新流程定义（草稿状态）
+      - POST   /api/workflows/:id/publish — 发布流程（创建版本）
+      - DELETE /api/workflows/:id         — 删除流程定义
+      流程实例管理 API：
+      - GET    /api/instances             — 实例列表（支持 workflowId/status/createdBy 过滤，分页）
+      - GET    /api/instances/:id         — 实例详情
+      - GET    /api/instances/:id/trace   — 实例执行轨迹（所有节点状态+时间线）
+      - POST   /api/instances             — 手动启动流程
+      统计 API：
+      - GET    /api/stats/overview        — 流程总体统计（运行中/完成/失败数量）
+      - GET    /api/stats/trend           — 近7天流程执行趋势
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 4: 前端基础架构 + 系统管理模块
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d4-w4-t1"
+    wave: 4
+    title: "前端 API 封装层"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d4-w3-t1", "d4-w3-t2"]
+    files:
+      - "web/src/utils/request.ts"
+      - "web/src/api/auth.ts"
+      - "web/src/api/user.ts"
+      - "web/src/api/role.ts"
+      - "web/src/api/menu.ts"
+      - "web/src/api/dict.ts"
+    description: |
+      1. web/src/utils/request.ts — axios 实例封装：
+         - baseURL 为空（使用相对路径）
+         - 请求拦截器：从 localStorage 读取 token，添加 Authorization: Bearer {token} 请求头
+         - 响应拦截器：统一处理 ApiResponse，code !== 200 时 throw Error(message)；401 清空 token 跳转登录；403 提示无权限
+         - 导出 get/post/put/del 封装方法
+      2. web/src/api/auth.ts — 认证相关 API：login/logout/refreshToken/getAuthInfo/changePassword
+         所有函数使用具体 TypeScript 类型（LoginRequest/LoginResponse/SystemUser），禁止 any
+      3. web/src/api/user.ts — 用户管理 API：listUsers/createUser/getUserById/updateUser/deleteUser/assignRoles
+      4. web/src/api/role.ts — 角色管理 API：listRoles/createRole/updateRole/deleteRole/assignMenus
+      5. web/src/api/menu.ts — 菜单 API：getMenuTree/createMenu/updateMenu/deleteMenu
+      6. web/src/api/dict.ts — 字典 API：listDicts/getDictItems/createDict/updateDictItem
+
+  - task_id: "d4-w4-t2"
+    wave: 4
+    title: "前端类型定义 + Pinia 状态管理"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d4-w1-t1"]
+    files:
+      - "web/src/types/sys.ts"
+      - "web/src/stores/auth.ts"
+      - "web/src/stores/menu.ts"
+    description: |
+      1. web/src/types/sys.ts — TypeScript 类型定义（对应 sysmodel/types.go）：
+         SystemUser, SystemRole, SystemMenu, SystemDict, SystemDictItem, LoginRequest, LoginResponse, UserFilter, PageResult<T>
+         禁止使用 any，枚举使用 const enum
+      2. web/src/stores/auth.ts — Pinia auth store：
+         - state: user (SystemUser|null), token (string), perms (string[])
+         - actions: login(LoginRequest)/logout/initAuth（应用启动时从 localStorage 恢复）/refreshToken
+         - getters: isLoggedIn, hasPermission(permCode: string)
+      3. web/src/stores/menu.ts — Pinia menu store：
+         - state: menus (SystemMenu[]), routes (RouteRecordRaw[])
+         - actions: loadMenus()/buildRoutes(menus)
+         - 动态路由注册（router.addRoute）
+
+  - task_id: "d4-w4-t3"
+    wave: 4
+    title: "前端路由 + 布局 + 路由守卫"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d4-w4-t2"]
+    files:
+      - "web/src/router/index.ts"
+      - "web/src/layouts/BasicLayout.vue"
+    description: |
+      1. web/src/router/index.ts（已有文件扩展）：
+         - 添加系统管理路由（/sys/users, /sys/roles, /sys/menus, /sys/dicts），所有子路由 lazy load
+         - 全局路由守卫：
+           * 未登录访问非 /login 页面，跳转 /login
+           * 已登录访问 /login，跳转 /dashboard
+           * 权限不足（来自 meta.requiresPermission），提示无权限
+      2. web/src/layouts/BasicLayout.vue（已有文件扩展）：
+         - 侧边栏根据 menuStore.menus 动态渲染 Element Plus el-menu
+         - 顶部导航栏：用户名、退出登录按钮
+         - 面包屑：根据 route.matched 自动生成
+         - 响应式侧边栏（mobile 折叠）
+
+  - task_id: "d4-w4-t4"
+    wave: 4
+    title: "系统管理前端页面"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d4-w4-t1", "d4-w4-t3"]
+    files:
+      - "web/src/views/sys/UserList.vue"
+      - "web/src/views/sys/RoleList.vue"
+      - "web/src/views/sys/MenuList.vue"
+      - "web/src/views/sys/DictList.vue"
+      - "web/src/views/Login.vue"
+    description: |
+      所有页面使用 <script setup lang="ts">，禁止 any，Element Plus 组件：
+      1. Login.vue：登录表单（用户名+密码+验证码选项），Form 表单校验，调用 authStore.login
+      2. UserList.vue：
+         - el-table 用户列表，分页，搜索（用户名/状态）
+         - 新增/编辑用户 el-dialog（表单校验：必填、邮箱格式、手机格式）
+         - 分配角色 el-dialog（el-transfer 穿梭框）
+         - 删除确认
+         - 不超过 300 行，超出拆分为 UserForm.vue 子组件
+      3. RoleList.vue：角色列表，新增/编辑，分配菜单（el-tree 勾选）
+      4. MenuList.vue：菜单树表（el-table tree）展示，新增/编辑菜单（支持父菜单选择）
+      5. DictList.vue：字典类型列表，点击查看字典项，新增/编辑/删除
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 5: 流程管理前端页面
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d4-w5-t1"
+    wave: 5
+    title: "流程设计器前端页面"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d4-w4-t1"]
+    files:
+      - "web/src/views/WorkflowDesigner.vue"
+      - "web/src/views/WorkflowList.vue"
+      - "web/src/api/workflow.ts"
+    description: |
+      1. web/src/api/workflow.ts — 流程 API 封装：listWorkflows/createWorkflow/getWorkflow/updateWorkflow/publishWorkflow/deleteWorkflow
+      2. WorkflowList.vue：
+         - 流程定义列表（el-table）：名称、版本、状态、创建人、更新时间
+         - 搜索（名称/状态）、分页
+         - 操作：新建（跳转设计器）、编辑（跳转设计器）、发布、删除
+      3. WorkflowDesigner.vue（基于 LogicFlow 1.2+）：
+         - LogicFlow 画布初始化：节点类型注册（start/end/task/decision/subflow/human_task）
+         - 工具栏：节点拖拽面板（各节点类型），撤销/重做/适配屏幕/导入/导出 JSON
+         - 右侧属性面板（el-form）：选中节点后显示节点属性表单（节点名、超时、重试策略、human_task config 等）
+         - 顶部操作栏：保存草稿、发布、返回列表
+         - DAG 校验：提交前校验必须有 start/end 节点，不存在孤立节点
+         - 不超过 300 行，复杂组件拆分为 NodePanel.vue / NodeProperties.vue
+
+  - task_id: "d4-w5-t2"
+    wave: 5
+    title: "实例监控 + 审批工作台 + 端点管理前端页面"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d4-w4-t1"]
+    files:
+      - "web/src/views/InstanceMonitor.vue"
+      - "web/src/views/ApprovalWorkbench.vue"
+      - "web/src/views/AuditLogs.vue"
+    description: |
+      1. InstanceMonitor.vue：
+         - 实例列表（el-table），搜索（workflowId/status/创建人），分页
+         - 实例详情 el-drawer：显示基本信息、节点状态时间线（el-timeline）、当前运行节点
+         - 操作：暂停/恢复/终止/重试实例（按钮 + 二次确认）
+         - 节点执行轨迹：直观显示节点执行顺序和状态（可复用 LogicFlow 只读模式）
+      2. ApprovalWorkbench.vue：
+         - 标签页：待审批 / 已审批 / 抄送我
+         - 审批任务卡片：流程名、发起人、发起时间、当前节点
+         - 审批操作弹窗：通过/驳回，填写意见，表单字段渲染（动态 FormField）
+         - 批量审批（全选 + 批量通过）
+         - 不超过 300 行
+      3. AuditLogs.vue：
+         - 搜索表单（实例ID/操作类型/操作人/时间范围），分页列表
+         - 详情 el-drawer：before/after data JSON 对比展示

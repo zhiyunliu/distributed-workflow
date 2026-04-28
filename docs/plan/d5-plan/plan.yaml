@@ -1,0 +1,459 @@
+plan_id: "20260428-d5-ha-enterprise"
+plan_objective: "D5阶段 生产级高可用 + 企业级集成 — 引擎集群HA、全链路可观测性、开放API网关、企业连接器、SSO、数据生命周期"
+complexity: complex
+created_at: "2026-04-28"
+target_version: "v0.9.0"
+depends_on: "20260428-d4-visual-management"
+
+tldr: |
+  D5 阶段分 5 个 Wave 顺序推进：
+  Wave 1 并行完成 D5 数据模型、数据库 Schema、集群 HA 接口定义；
+  Wave 2 并行实现集群主从选举（Redis 租约）、调度分片（一致性哈希）、脑裂防护；
+  Wave 3 并行实现 Prometheus 指标体系 + OpenTelemetry 链路追踪 + 标准化日志；
+  Wave 4 并行实现 API 网关（鉴权/限流/熔断）、Webhook 集成中心、内部事件总线、连接器框架、SSO 增强；
+  Wave 5 并行实现数据生命周期管理（归档/备份）、模板市场、性能优化、K8s 部署清单。
+  全程兼容 D1-D4 所有接口，HA 模块可通过配置开关关闭，降级为单节点模式。
+
+open_questions:
+  - 一致性哈希分片数量建议：100 虚拟节点（VNode）是否足够？Engine 集群预期最大节点数？
+  - OpenTelemetry Exporter 优先支持哪个后端：Jaeger or Tempo（Grafana 全家桶）？
+  - 数据归档策略：归档到同库冷表还是独立数据库？建议同库冷表（cold_ 前缀）降低运维复杂度
+  - K8s Operator 是否纳入 D5 范围，还是推迟到 D6+？
+
+pre_mortem:
+  overall_risk_level: high
+  critical_failure_modes:
+    - scenario: Redis 宕机导致集群选举失败，Engine 集群全部降级为从节点，调度停止
+      likelihood: low
+      impact: critical
+      mitigation: Redis 集群（3主3从），选举使用 RedLock 多节点确认机制，Redis 不可用时降级为单节点模式（本地 leader flag）
+    - scenario: 分片重平衡过程中，部分实例被两个节点同时调度，产生重复执行
+      likelihood: medium
+      impact: high
+      mitigation: 调度前必须获取 Redis 分布式锁（key=sched:{instanceId}），锁 TTL=节点调度周期*2，重平衡期间标记 rebalancing 状态暂停新调度
+    - scenario: OTel SDK 引入后，内存占用增加 30%+，影响高并发场景
+      likelihood: medium
+      impact: medium
+      mitigation: 使用 SDK 的 BatchSpanProcessor（批量上报），生产环境启用概率采样（1%），禁用 DEBUG span
+    - scenario: Webhook 推送压力过大，事件积压导致内存 OOM
+      likelihood: medium
+      impact: high
+      mitigation: 事件总线使用 Redis Stream（持久化），Webhook 推送使用独立 worker goroutine 池（大小=50），队列满则写入死信
+
+implementation_specification:
+  new_tables:
+    - cluster_nodes: (node_id VARCHAR(128) PK, node_ip VARCHAR(64), status VARCHAR(32), role VARCHAR(16), last_heartbeat DATETIME2, epoch INT DEFAULT 0, shard_range NVARCHAR(256), registered_at DATETIME2)
+    - leader_election: (cluster_id VARCHAR(64) PK, leader_id VARCHAR(128), epoch INT, elected_at DATETIME2, lease_expire DATETIME2)
+    - template_info: (id VARCHAR(64) PK, name NVARCHAR(128), description NVARCHAR(512), category VARCHAR(64), version VARCHAR(32), definition NVARCHAR(MAX), cover_image VARCHAR(512), tags NVARCHAR(256), status VARCHAR(32), created_by VARCHAR(64), created_at DATETIME2, published_at DATETIME2)
+    - template_versions: (id BIGINT IDENTITY PK, template_id VARCHAR(64), version VARCHAR(32), definition NVARCHAR(MAX), change_log NVARCHAR(512), created_at DATETIME2)
+    - data_archive_tasks: (id BIGINT IDENTITY PK, task_type VARCHAR(64), target_table VARCHAR(64), archive_before DATETIME2, status VARCHAR(32), archived_count INT, started_at DATETIME2, finished_at DATETIME2, error_msg NVARCHAR(1024))
+    - backup_records: (id BIGINT IDENTITY PK, backup_type VARCHAR(32), file_path NVARCHAR(512), file_size BIGINT, checksum VARCHAR(64), status VARCHAR(32), backup_at DATETIME2, storage_type VARCHAR(32))
+    - webhook_configs: (id VARCHAR(64) PK, name NVARCHAR(128), url NVARCHAR(512), event_types NVARCHAR(1024), secret VARCHAR(256), retry_max INT DEFAULT 3, status VARCHAR(32), created_by VARCHAR(64), created_at DATETIME2)
+    - webhook_delivery_logs: (id BIGINT IDENTITY PK, webhook_id VARCHAR(64), event_type VARCHAR(64), payload NVARCHAR(MAX), status VARCHAR(32), http_status INT, response_body NVARCHAR(1024), retry_count INT, delivered_at DATETIME2)
+
+tasks:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 1: 类型 + Schema + 接口定义
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d5-w1-t1"
+    wave: 1
+    title: "D5 集群 HA 类型与接口定义"
+    agent: gem-implementer
+    status: not-started
+    dependencies: []
+    files:
+      - "types/cluster_types.go"
+      - "interfaces/cluster.go"
+    description: |
+      1. types/cluster_types.go — D5 集群 HA 类型：
+         - ClusterNode {NodeID, NodeIP, Status, Role string, LastHeartbeat time.Time, Epoch int, ShardRange string}
+         - NodeRole 枚举：NodeRoleLeader="leader", NodeRoleFollower="follower", NodeRoleCandidate="candidate"
+         - NodeStatus 枚举：NodeStatusActive="active", NodeStatusOffline="offline", NodeStatusRebalancing="rebalancing"
+         - LeaderElectionState {ClusterID, LeaderID string, Epoch int, ElectedAt, LeaseExpire time.Time}
+         - ShardAssignment {NodeID string, Slots []int, VirtualNodes []int}
+      2. interfaces/cluster.go — 集群服务接口：
+         - ClusterManager 接口：
+           * Start(ctx context.Context) error
+           * Stop() error
+           * GetLeaderID() string
+           * IsLeader() bool
+           * GetClusterNodes() []*types.ClusterNode
+           * GetMyShardSlots() []int
+           * IsMyResponsibility(instanceID string) bool — 判断实例是否属于本节点分片
+         - ElectionService 接口：
+           * TryAcquireLeader(ctx context.Context) (bool, error)
+           * RenewLease(ctx context.Context) error
+           * ResignLeader(ctx context.Context) error
+           * WatchLeaderChange(ctx context.Context, onChange func(leaderID string)) error
+         - ShardingService 接口：
+           * ComputeShard(instanceID string) int — 一致性哈希
+           * Rebalance(ctx context.Context, nodes []string) error
+           * GetShardOwner(slot int) string
+
+  - task_id: "d5-w1-t2"
+    wave: 1
+    title: "D5 数据库 Schema"
+    agent: gem-implementer
+    status: not-started
+    dependencies: []
+    files:
+      - "storage/sqlserver/schema_d5.sql"
+    description: |
+      创建 storage/sqlserver/schema_d5.sql，包含 D5 所有 DDL（幂等 IF NOT EXISTS 风格）：
+      1. cluster_nodes 表（见 implementation_specification.new_tables）
+      2. leader_election 表
+      3. template_info 表
+      4. template_versions 表
+      5. data_archive_tasks 表
+      6. backup_records 表
+      7. webhook_configs 表
+      8. webhook_delivery_logs 表
+      9. 冷数据归档表（与主表结构相同，前缀 cold_）：
+         - cold_workflow_instances（结构同 workflow_instances，新增 archived_at DATETIME2）
+         - cold_workflow_node_states（结构同 workflow_node_states，新增 archived_at DATETIME2）
+         - cold_workflow_instance_logs（结构同 workflow_instance_logs，新增 archived_at DATETIME2）
+      10. 关键索引：idx_cluster_nodes_status, idx_webhook_configs_status, idx_template_info_category, idx_cold_instances_archived_at
+
+  - task_id: "d5-w1-t3"
+    wave: 1
+    title: "D5 服务接口定义（可观测性、模板、事件总线）"
+    agent: gem-implementer
+    status: not-started
+    dependencies: []
+    files:
+      - "interfaces/observability.go"
+      - "interfaces/template_service.go"
+      - "interfaces/eventbus.go"
+    description: |
+      1. interfaces/observability.go：
+         - MetricsService 接口：
+           * RecordInstanceStarted(workflowID string)
+           * RecordInstanceCompleted(workflowID string, durationMs int64)
+           * RecordInstanceFailed(workflowID string)
+           * RecordNodeExecution(workflowID, nodeType, nodeID string, durationMs int64, success bool)
+           * RecordScheduleLatency(durationMs int64)
+           * RecordWorkerLoad(workerID string, loadPercent float64)
+           * RecordAPIRequest(path, method string, statusCode int, durationMs int64)
+         - TracingService 接口：
+           * StartSpan(ctx context.Context, operationName string) (context.Context, interface{})
+           * FinishSpan(span interface{})
+           * AnnotateSpan(span interface{}, key, value string)
+           * RecordSpanError(span interface{}, err error)
+      2. interfaces/template_service.go：
+         - TemplateService 接口：ListTemplates/GetTemplate/PublishTemplate/CreateWorkflowFromTemplate/CreateTemplateVersion/GetTemplateVersions/DeleteTemplate
+      3. interfaces/eventbus.go：
+         - EventBus 接口：Publish(ctx, eventType string, payload interface{}) error / Subscribe(eventType string, handler EventHandler) / Unsubscribe(subscriptionID string)
+         - WorkflowEvent struct {EventID, EventType string, OccurredAt time.Time, TraceID, InstanceID, WorkflowID string, Payload map[string]interface{}}
+         - EventHandler type: func(event *WorkflowEvent) error
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 2: 集群 HA 实现
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d5-w2-t1"
+    wave: 2
+    title: "Redis 主从选举实现"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d5-w1-t1"]
+    files:
+      - "engine/cluster/election.go"
+    description: |
+      新建 engine/cluster/ 目录，创建 election.go：
+      - electionService struct {redisClient *redis.Client, nodeID string, clusterID string}
+      - 使用 Redis SET NX EX 实现分布式锁：
+        key = "workflow:leader:{clusterID}", value = nodeID, TTL = 30s
+      - TryAcquireLeader：调用 Redis SET NX EX，成功则持久化到 cluster_nodes + leader_election 表
+      - RenewLease：每 10s 续期（EXPIRE key 30），续期失败立即触发 leader 降级回调
+      - ResignLeader：DELETE key，更新 cluster_nodes status=follower
+      - WatchLeaderChange：后台 goroutine 每 5s 检查 key 是否存在，leader 变更时回调 onChange
+      - Epoch 机制：每次新 leader 选举成功，Epoch+1，写入 Redis Hash workflow:epoch:{clusterID}
+        每次写入核心状态前检查 Epoch，低 Epoch 写入被拒绝
+      编译时断言：var _ interfaces.ElectionService = (*electionService)(nil)
+
+  - task_id: "d5-w2-t2"
+    wave: 2
+    title: "一致性哈希分片调度实现"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d5-w1-t1"]
+    files:
+      - "engine/cluster/sharding.go"
+    description: |
+      创建 engine/cluster/sharding.go：
+      - shardingService struct {ring *consistenthash.Ring, nodeID string, mu sync.RWMutex}
+      - 使用 100 个虚拟节点（VNode）
+      - ComputeShard(instanceID string) int：FNV-32 哈希取模（slot = hash(instanceID) % 1024）
+      - IsMyResponsibility(instanceID string)：查询 ring，slot owner 是否为当前 nodeID
+      - Rebalance：重建一致性哈希环，从 Nacos/Redis 加载最新集群节点列表
+      - AddNode / RemoveNode：维护 ring
+      - 对外暴露 ClusterManager struct 聚合 ElectionService + ShardingService + Repository 操作
+      编译时断言：var _ interfaces.ClusterManager = (*clusterManager)(nil)
+
+  - task_id: "d5-w2-t3"
+    wave: 2
+    title: "调度器 HA 集成"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d5-w2-t1", "d5-w2-t2"]
+    files:
+      - "engine/scheduler.go"
+    description: |
+      在已有 engine/scheduler.go 基础上集成 HA 能力：
+      1. 在调度前调用 clusterMgr.IsMyResponsibility(instanceID) 判断分片，非本节点负责的实例跳过
+      2. Leader 选举状态监听：非主节点时暂停全局定时调度（FailoverWatcher/RetryScheduler/定时端点），仅处理本分片的流程调度
+      3. 主节点切换事件回调：新主节点启动时，刷新分片信息，接管原主节点的全局调度职责
+      4. 平滑下线：调用 scheduler.GracefulShutdown(ctx, timeout)，等待当前批次调度完成后退出
+      向 engine.go 注入 ClusterManager（可选，nil 时为单节点模式）
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 3: 全链路可观测性
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d5-w3-t1"
+    wave: 3
+    title: "Prometheus 指标体系实现"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d5-w1-t3"]
+    files:
+      - "engine/metrics/prometheus.go"
+      - "endpoint/http/server.go"
+    description: |
+      1. 新建 engine/metrics/prometheus.go：
+         - MetricsRegistry struct，初始化所有 Prometheus 指标（CounterVec/GaugeVec/HistogramVec）：
+           * workflow_engine_instance_total (Counter, labels: workflow_id, status)
+           * workflow_engine_instance_running (Gauge, labels: workflow_id)
+           * workflow_schedule_latency_ms (Histogram, buckets: 5,10,25,50,100,250,500,1000)
+           * workflow_worker_load_percent (Gauge, labels: worker_id)
+           * workflow_worker_task_execution_time_ms (Histogram, labels: worker_id, node_type)
+           * workflow_worker_task_failed_total (Counter, labels: worker_id, error_type)
+           * workflow_db_connection_usage (Gauge)
+           * workflow_redis_command_latency_ms (Histogram, labels: command)
+         - 实现 interfaces.MetricsService 所有方法，委托各 Prometheus 指标记录
+         - NewPrometheusMetrics() *MetricsRegistry
+         编译时断言：var _ interfaces.MetricsService = (*MetricsRegistry)(nil)
+      2. endpoint/http/server.go：
+         - 在 RegisterRoutes 中添加 GET /metrics 路由，返回 Prometheus metrics（promhttp.Handler()）
+         - 添加 HTTP metrics 中间件：每个请求记录 method/path/status/duration
+
+  - task_id: "d5-w3-t2"
+    wave: 3
+    title: "OpenTelemetry 链路追踪集成"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d5-w1-t3"]
+    files:
+      - "engine/tracing/otel.go"
+    description: |
+      新建 engine/tracing/otel.go：
+      - 使用 go.opentelemetry.io/otel 包（需要在 go.mod 中添加，但 go.mod 已存在则注意不修改核心依赖）
+      - InitTracer(serviceName, exporterEndpoint string) (func(), error)：
+        * 创建 OTLP gRPC exporter，导出到 exporterEndpoint（空时使用 noop exporter）
+        * 创建 BatchSpanProcessor（批量发送，减少 overhead）
+        * 创建 TracerProvider，注册为全局 provider
+        * 采样策略：TraceIDRatioBased（从 env OTEL_SAMPLE_RATE 读取，默认 0.01）
+        * 返回 shutdown 函数
+      - otelTracingService struct {tracer trace.Tracer}
+      - 实现 interfaces.TracingService 接口：
+        * StartSpan：创建 child span，返回 context 和 span（作为 interface{}）
+        * FinishSpan：span.End()
+        * AnnotateSpan：span.SetAttributes(attribute.String(key, value))
+        * RecordSpanError：span.RecordError(err); span.SetStatus(codes.Error, err.Error())
+      编译时断言：var _ interfaces.TracingService = (*otelTracingService)(nil)
+
+  - task_id: "d5-w3-t3"
+    wave: 3
+    title: "结构化日志标准化"
+    agent: gem-implementer
+    status: not-started
+    dependencies: []
+    files:
+      - "engine/logger/logger.go"
+    description: |
+      新建 engine/logger/logger.go：
+      - 使用 log/slog（Go 1.21+ 标准库）实现结构化 JSON 日志
+      - InitLogger(level, format string)：根据环境变量 LOG_LEVEL/LOG_FORMAT 初始化
+        * format=json（默认）：slog.NewJSONHandler(os.Stdout, opts)
+        * format=text：slog.NewTextHandler(os.Stdout, opts)
+      - WorkflowLogger struct {logger *slog.Logger}，封装日志方法：
+        * WithTraceID(traceID string) *WorkflowLogger — 返回带 trace_id 字段的子 logger
+        * WithInstanceID(instanceID string) *WorkflowLogger
+        * Info/Warn/Error/Debug(ctx context.Context, msg string, args ...any)：从 ctx 提取 trace_id/instance_id 添加到每条日志
+      - 日志字段规范：level/time/trace_id/instance_id/node_id/workflow_id/worker_id/message/error/stack
+      - GetLogger() *WorkflowLogger — 全局单例
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 4: 企业级集成
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d5-w4-t1"
+    wave: 4
+    title: "Redis Stream 事件总线实现"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d5-w1-t3"]
+    files:
+      - "engine/eventbus/redis_stream.go"
+    description: |
+      新建 engine/eventbus/redis_stream.go，实现 interfaces.EventBus：
+      - redisEventBus struct {client *redis.Client, handlers sync.Map, streamKey string, consumerGroup string, nodeID string}
+      - streamKey = "workflow:events"，consumerGroup = "workflow-engine"
+      - Publish：XADD workflow:events * type {eventType} payload {JSON}，maxlen=100000
+      - Subscribe：调用 XREADGROUP GROUP {consumerGroup} {nodeID} COUNT 10 BLOCK 100 STREAMS workflow:events >
+        * 后台 goroutine 循环消费，调用注册的 handler
+        * 消费成功 XACK；失败重试 3 次；超过重试进入死信
+      - Unsubscribe：从 handlers map 移除
+      - 事件格式：WorkflowEvent struct（包含 EventID/EventType/OccurredAt/TraceID/InstanceID/WorkflowID/Payload）
+      编译时断言：var _ interfaces.EventBus = (*redisEventBus)(nil)
+
+  - task_id: "d5-w4-t2"
+    wave: 4
+    title: "Webhook 集成中心实现"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d5-w4-t1"]
+    files:
+      - "engine/webhook/manager.go"
+      - "storage/sqlserver/repository_d5.go"
+    description: |
+      1. engine/webhook/manager.go：
+         - WebhookManager struct {repo interfaces.WebhookRepository, eventBus interfaces.EventBus, httpClient *http.Client, workerPool chan struct{}}
+         - Start(ctx context.Context)：订阅所有事件类型，workerPool 大小=50
+         - HandleEvent(event *interfaces.WorkflowEvent)：
+           * 查询匹配该事件类型的 webhook 配置
+           * 构造 payload：事件体 + HMAC-SHA256 签名（secret 通过 os.Getenv 读取）
+           * 异步发送（workerPool 令牌），记录 delivery_log
+           * 失败时指数退避重试（最多 retry_max 次，最大间隔 1 分钟）
+         - 签名算法：X-Signature: sha256={HMAC-SHA256(payload, secret)}
+      2. storage/sqlserver/repository_d5.go：
+         - 实现 WebhookRepository 接口（CRUD webhook_configs, webhook_delivery_logs）
+         - 实现 TemplateRepository 接口（CRUD template_info, template_versions）
+         - 实现 ArchiveRepository 接口（归档操作方法）
+
+  - task_id: "d5-w4-t3"
+    wave: 4
+    title: "模板市场服务实现"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d5-w4-t2"]
+    files:
+      - "engine/template_service.go"
+    description: |
+      在已有 engine/template_service.go 基础上完善，实现 interfaces.TemplateService：
+      - templateService struct {repo interfaces.TemplateRepository, workflowRepo interfaces.WorkflowRepository}
+      - ListTemplates(ctx, category, keyword string, page, pageSize int) ([]*types.TemplateInfo, int64, error)：支持按分类和关键词搜索
+      - GetTemplate(ctx, templateID string) (*types.TemplateInfo, error)
+      - PublishTemplate(ctx, workflowID, createdBy, changeLog string) (*types.TemplateInfo, error)：从流程定义创建模板
+      - CreateWorkflowFromTemplate(ctx, templateID, workflowName, createdBy string) (string, error)：从模板实例化流程定义
+      - CreateTemplateVersion：创建新版本（复制 definition 快照）
+      编译时断言：var _ interfaces.TemplateService = (*templateService)(nil)
+
+  - task_id: "d5-w4-t4"
+    wave: 4
+    title: "API 网关层增强（限流/熔断）"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d5-w3-t1"]
+    files:
+      - "endpoint/http/middleware_circuit_breaker.go"
+      - "endpoint/http/middleware_ratelimit.go"
+    description: |
+      1. middleware_circuit_breaker.go — 熔断中间件：
+         - 基于滑动窗口统计错误率
+         - circuitBreaker struct {name string, state string, threshold float64, windowSize time.Duration, errorCount, totalCount int64, openedAt time.Time, resetTimeout time.Duration}
+         - 状态机：CLOSED → OPEN（错误率超阈值）→ HALF_OPEN（resetTimeout 后）→ CLOSED/OPEN
+         - OPEN 状态直接返回 503，不调用下游
+         - 指标记录：熔断触发次数、当前状态
+         注意：middleware_ratelimit.go 已在 D6 Wave 5 实现，此处仅补充熔断器（不重复实现限流）
+      2. 若 middleware_ratelimit.go 中缺少按接口路径限流能力，在此补充路由级限流配置
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 5: 数据生命周期 + 性能优化 + 部署
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d5-w5-t1"
+    wave: 5
+    title: "数据归档与生命周期管理"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d5-w4-t2"]
+    files:
+      - "engine/archive_manager.go"
+    description: |
+      新建 engine/archive_manager.go：
+      - archiveManager struct {repo interfaces.ArchiveRepository, workflowRepo interfaces.WorkflowRepository}
+      - StartArchiveScheduler(ctx context.Context)：
+        * 每天凌晨 2:00 执行一次归档任务（可通过 env ARCHIVE_CRON 配置）
+        * 归档条件：workflow_instances status IN ('completed','failed','cancelled') AND end_time < NOW() - {retentionDays}
+        * retentionDays 默认 90，通过 env DATA_RETENTION_DAYS 配置
+      - ArchiveInstances(ctx, beforeTime time.Time) (count int, err error)：
+        1. 查询符合条件的 instance_ids（批量，每批 1000 条）
+        2. 事务内：INSERT cold_workflow_instances SELECT ... FROM workflow_instances WHERE id IN (...)
+        3. INSERT cold_workflow_node_states SELECT ...
+        4. INSERT cold_workflow_instance_logs SELECT ...
+        5. DELETE workflow_instances WHERE id IN (...)（级联删除子表）
+        6. 写入 data_archive_tasks 记录
+      - CleanArchiveData(ctx, beforeTime time.Time) error：删除超过 365 天的冷数据
+      - GetArchiveTasks(ctx, page, pageSize int) ([]*ArchiveTask, int64, error)
+      编译时断言：var _ interfaces.ArchiveManager = (*archiveManager)(nil)
+
+  - task_id: "d5-w5-t2"
+    wave: 5
+    title: "D5 HTTP API 扩展"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d5-w4-t3", "d5-w5-t1"]
+    files:
+      - "endpoint/http/server_d5.go"
+    description: |
+      参考已有 server.go 风格，新建 server_d5.go 注册 D5 新增 API：
+      集群 HA 管理 API：
+      - GET  /api/cluster/nodes       — 集群节点列表与状态
+      - GET  /api/cluster/leader      — 当前 leader 信息
+      - GET  /api/cluster/shards      — 分片信息
+      模板市场 API：
+      - GET    /api/templates          — 模板列表（支持 category/keyword 搜索，分页）
+      - GET    /api/templates/:id      — 模板详情
+      - POST   /api/templates          — 从流程定义发布模板
+      - POST   /api/templates/:id/use  — 从模板创建流程定义
+      - DELETE /api/templates/:id      — 删除模板
+      数据归档 API：
+      - GET    /api/archive/tasks      — 归档任务列表
+      - POST   /api/archive/trigger    — 手动触发归档（管理员）
+      Webhook 管理 API：
+      - GET    /api/webhooks           — Webhook 配置列表
+      - POST   /api/webhooks           — 创建 Webhook
+      - PUT    /api/webhooks/:id       — 更新 Webhook
+      - DELETE /api/webhooks/:id       — 删除 Webhook
+      - GET    /api/webhooks/:id/logs  — 推送日志（分页）
+      - POST   /api/webhooks/:id/logs/:logId/resend — 手动重发失败推送
+      指标 API（已在 Wave 3 添加，此处登记）：
+      - GET /metrics — Prometheus metrics endpoint
+
+  - task_id: "d5-w5-t3"
+    wave: 5
+    title: "K8s 部署清单与 docker-compose 更新"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d5-w5-t2"]
+    files:
+      - "deploy/k8s/deployment.yaml"
+      - "deploy/k8s/service.yaml"
+      - "deploy/k8s/configmap.yaml"
+      - "docker-compose.yml"
+    description: |
+      1. deploy/k8s/deployment.yaml：
+         - Engine Deployment：replicas=3，image=ghcr.io/zhiyunliu/distributed-workflow:v0.9.0
+         - 环境变量通过 configmap/secret 注入（JWT_SECRET/DB_DSN/REDIS_ADDR/NACOS_ADDR）
+         - livenessProbe: GET /health 200
+         - readinessProbe: GET /ready 200
+         - resources: requests cpu=100m/memory=128Mi, limits cpu=500m/memory=512Mi
+         - podAntiAffinity：同一节点最多运行 1 个 Engine Pod
+      2. deploy/k8s/service.yaml：
+         - ClusterIP Service 暴露 Engine API 端口 8080
+         - Headless Service 用于 Engine 节点间 gRPC 通信
+      3. deploy/k8s/configmap.yaml：
+         - 非敏感配置（LOG_LEVEL/DATA_RETENTION_DAYS/ARCHIVE_CRON/OTEL_EXPORTER_ENDPOINT）
+         - 使用 Secret 存储 JWT_SECRET/DB_PASSWORD/REDIS_PASSWORD
+      4. docker-compose.yml 更新（已有文件扩展）：
+         - 新增 prometheus service（镜像 prom/prometheus:latest，挂载 prometheus.yml）
+         - 新增 grafana service（镜像 grafana/grafana:latest，端口 3000）
+         - 新增 jaeger service（镜像 jaegertracing/all-in-one，端口 16686/14268）
+         注意：不删除已有的 Engine/Redis/DB/Nacos service 配置，仅追加新服务

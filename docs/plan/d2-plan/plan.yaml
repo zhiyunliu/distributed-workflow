@@ -1,0 +1,330 @@
+plan_id: "20260428-d2-flow-management"
+plan_objective: "D2阶段 流程管理与控制 — 版本管理、生命周期管控、错误处理、高可用Worker、子流程"
+complexity: complex
+created_at: "2026-04-28"
+target_version: "v0.5.0-v0.6.0"
+depends_on: "d1-plan"
+
+tldr: |
+  D2 阶段分 5 个 Wave 顺序推进：
+  Wave 1 并行完成 D2 类型扩展与数据库 Schema；
+  Wave 2 并行实现版本管理 Repository 与 Subflow 接口；
+  Wave 3 并行实现版本管理服务、生命周期管控服务、重试服务；
+  Wave 4 实现 Failover Manager（故障转移）、子流程服务；
+  Wave 5 完成 HTTP API 扩展与配套测试。
+  100% 向后兼容 D1 阶段所有接口、数据结构。
+
+open_questions:
+  - D1 阶段的 WorkflowStatus 是否已通过 NVARCHAR 存储（允许直接新增 paused/cancelled/retrying）
+  - Redis 分布式锁用于 Worker 心跳检测，D1 锁的 TTL 策略需确认
+  - 子流程与父流程在同一 Engine 节点调度时是否存在死锁风险
+
+pre_mortem:
+  overall_risk_level: medium
+  critical_failure_modes:
+    - scenario: 流程状态机扩展后，D1 存量数据的 status 字段不兼容新枚举值
+      likelihood: low
+      impact: high
+      mitigation: 新增状态使用新字符串值，数据库查询兼容旧值，所有状态转换通过统一状态机方法调用
+    - scenario: Worker 心跳丢失误判导致正在运行的节点被重分配，产生双执行
+      likelihood: medium
+      impact: high
+      mitigation: 节点执行前写入 Redis 幂等锁，重分配前检查节点状态，执行结果上报使用乐观锁
+    - scenario: 子流程嵌套超过 5 层后栈溢出或调度死锁
+      likelihood: low
+      impact: high
+      mitigation: Engine 调度子流程时检查嵌套深度，超过 5 层返回错误
+
+implementation_specification:
+  new_tables:
+    - workflow_versions (id, workflow_id, version, definition JSON, change_log, created_by, created_at, is_current BIT, gray_config JSON)
+    - workflow_retry_records (id, instance_id, node_id, retry_count, last_retry_at, next_retry_at, status, error_msg)
+    - dead_letter_queue (id, instance_id, node_id, error_msg, original_input JSON, failed_at, moved_at)
+    - worker_heartbeats (worker_id PK, worker_ip, last_heartbeat, status, task_count, registered_at)
+  extended_tables:
+    - workflow_definitions: ADD current_version INT DEFAULT 1, global_retry_policy JSON, timeout_seconds INT DEFAULT 0
+    - workflow_instances: ADD workflow_version INT DEFAULT 1, pause_time, cancel_time, parent_instance_id, parent_node_id, is_subflow BIT DEFAULT 0, pause_node_ids JSON, operator VARCHAR(64)
+    - workflow_node_states: ADD retry_count INT DEFAULT 0, retry_policy JSON, skip_on_error BIT DEFAULT 0
+
+tasks:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 1: D2 类型扩展 + 数据库 Schema
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d2-w1-t1"
+    wave: 1
+    title: "D2 类型系统扩展"
+    agent: gem-implementer
+    status: not-started
+    dependencies: []
+    files:
+      - "types/types.go"
+    description: |
+      在 types/types.go 中新增 D2 所需类型（不修改任何 D1 字段）：
+      1. 扩展 WorkflowStatus 常量：WorkflowStatusPaused="paused", WorkflowStatusCancelled="cancelled", WorkflowStatusRetrying="retrying"
+      2. 扩展 WorkflowNodeStatus 常量：WorkflowNodeStatusSkipped="skipped", WorkflowNodeStatusCancelled="cancelled", WorkflowNodeStatusQueued="queued"
+      3. 新增 RetryStrategyType 枚举：RetryStrategyFixed="fixed", RetryStrategyExponential="exponential"
+      4. 新增 GrayReleaseType 枚举：GrayReleaseByRatio="ratio", GrayReleaseByWhitelist="whitelist"
+      5. 新增 SubflowCallMode 枚举：SubflowCallModeSync="sync", SubflowCallModeAsync="async"
+      6. 新增结构体（含 json 标签）：
+         - RetryPolicy {Strategy, MaxRetryCount, RetryInterval, MaxInterval, Multiplier, RetryOnErrorCodes}
+         - GrayReleaseConfig {Type, Ratio, Whitelist, Enabled}
+         - WorkflowVersion {ID, WorkflowID, Version, Definition *WorkflowDef, ChangeLog, CreatedBy, CreatedAt, IsCurrent, GrayConfig}
+         - SubflowNodeConfig {SubflowID, CallMode, InputMapping, OutputMapping, WaitForSubflow}
+      7. WorkflowDef 新增字段：CurrentVersion int, GlobalRetryPolicy *RetryPolicy, Timeout int
+      8. WorkflowNode 新增字段：RetryPolicy *RetryPolicy, SkipOnError bool, IsSubflowNode bool, SubflowConfig *SubflowNodeConfig
+      9. WorkflowInstance 新增字段：PauseTime, CancelTime time.Time, ParentInstanceID, ParentNodeID string, IsSubflowInstance bool, PauseNodeIDs []string, Operator string
+      10. WorkflowNodeState 新增字段：RetryCount int, SkipOnError bool
+
+  - task_id: "d2-w1-t2"
+    wave: 1
+    title: "D2 数据库 Schema"
+    agent: gem-implementer
+    status: not-started
+    dependencies: []
+    files:
+      - "storage/sqlserver/schema_d2.sql"
+    description: |
+      创建 storage/sqlserver/schema_d2.sql，包含 D2 所有 DDL（幂等 IF NOT EXISTS 风格）：
+      1. 新增表 workflow_versions：
+         CREATE TABLE workflow_versions (
+           id BIGINT IDENTITY(1,1) PRIMARY KEY,
+           workflow_id VARCHAR(64) NOT NULL,
+           version INT NOT NULL DEFAULT 1,
+           definition NVARCHAR(MAX) NOT NULL,         -- WorkflowDef JSON
+           change_log NVARCHAR(512) NULL,
+           created_by VARCHAR(64) NOT NULL,
+           created_at DATETIME2 NOT NULL DEFAULT GETDATE(),
+           is_current BIT NOT NULL DEFAULT 0,
+           gray_config NVARCHAR(MAX) NULL,
+           CONSTRAINT UQ_workflow_version UNIQUE (workflow_id, version)
+         )
+      2. 新增表 workflow_retry_records：
+         (id BIGINT IDENTITY PK, instance_id VARCHAR(64), node_id VARCHAR(64), retry_count INT, last_retry_at DATETIME2, next_retry_at DATETIME2, status VARCHAR(32), error_msg NVARCHAR(1024))
+      3. 新增表 dead_letter_queue：
+         (id BIGINT IDENTITY PK, instance_id VARCHAR(64), node_id VARCHAR(64), error_msg NVARCHAR(1024), original_input NVARCHAR(MAX), failed_at DATETIME2, moved_at DATETIME2)
+      4. 新增表 worker_heartbeats：
+         (worker_id VARCHAR(128) PK, worker_ip VARCHAR(64), last_heartbeat DATETIME2, status VARCHAR(32) DEFAULT 'active', task_count INT DEFAULT 0, registered_at DATETIME2)
+      5. ALTER TABLE workflow_definitions ADD current_version INT DEFAULT 1, global_retry_policy NVARCHAR(MAX) NULL, timeout_seconds INT DEFAULT 0
+      6. ALTER TABLE workflow_instances ADD workflow_version INT DEFAULT 1, pause_time DATETIME2 NULL, cancel_time DATETIME2 NULL, parent_instance_id VARCHAR(64) NULL, parent_node_id VARCHAR(64) NULL, is_subflow BIT DEFAULT 0, pause_node_ids NVARCHAR(MAX) NULL, operator VARCHAR(64) NULL
+      7. ALTER TABLE workflow_node_states ADD retry_count INT DEFAULT 0, skip_on_error BIT DEFAULT 0
+      8. 新增常用索引
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 2: 接口扩展 + Repository 扩展
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d2-w2-t1"
+    wave: 2
+    title: "版本管理与子流程 Repository 接口定义"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d2-w1-t1"]
+    files:
+      - "interfaces/repository.go"
+    description: |
+      在 interfaces/repository.go 中，向 WorkflowRepository 接口新增 D2 方法（不删除 D1 方法）：
+      1. 版本管理：
+         - CreateWorkflowVersion(ctx, ver *types.WorkflowVersion) error
+         - GetWorkflowVersion(ctx, workflowID string, version int) (*types.WorkflowVersion, error)
+         - ListWorkflowVersions(ctx, workflowID string) ([]*types.WorkflowVersion, error)
+         - SetCurrentVersion(ctx, workflowID string, version int) error
+         - GetCurrentVersion(ctx, workflowID string) (*types.WorkflowVersion, error)
+         - SetGrayConfig(ctx, workflowID string, version int, cfg *types.GrayReleaseConfig) error
+      2. 生命周期管控：
+         - PauseWorkflowInstance(ctx, instanceID, operator string, pauseNodeIDs []string) error
+         - ResumeWorkflowInstance(ctx, instanceID, operator string) error
+         - CancelWorkflowInstance(ctx, instanceID, operator string) error
+         - UpdateWorkflowInstanceStatus(ctx, instanceID string, status types.WorkflowStatus, operator string) error
+      3. 重试管理：
+         - CreateRetryRecord(ctx, record *RetryRecord) error
+         - GetPendingRetryRecords(ctx, beforeTime time.Time) ([]*RetryRecord, error)
+         - UpdateRetryRecord(ctx, id int64, status string, nextRetryAt *time.Time) error
+         - MoveToDeadLetter(ctx, instanceID, nodeID, errMsg string, input map[string]interface{}) error
+      4. Worker 心跳：
+         - UpsertWorkerHeartbeat(ctx, workerID, workerIP string) error
+         - GetActiveWorkers(ctx) ([]*WorkerInfo, error)
+         - MarkWorkerInactive(ctx, workerID string) error
+         - GetOrphanedNodeStates(ctx, activeWorkerIDs []string) ([]*types.WorkflowNodeState, error)
+      同时新增 RetryRecord, WorkerInfo 结构体（可放在 interfaces/repository.go 或 types/）
+
+  - task_id: "d2-w2-t2"
+    wave: 2
+    title: "服务层接口扩展（版本/生命周期/重试/Failover）"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d2-w1-t1"]
+    files:
+      - "interfaces/services.go"
+    description: |
+      在 interfaces/services.go 中新增 D2 服务接口（不修改 D1 接口）：
+      1. VersionManagerService 接口：
+         - CreateVersion(ctx, workflowID, changeLog, operatorID string) (*types.WorkflowVersion, error)
+         - GetVersion(ctx, workflowID string, version int) (*types.WorkflowVersion, error)
+         - ListVersions(ctx, workflowID string) ([]*types.WorkflowVersion, error)
+         - RollbackToVersion(ctx, workflowID string, version int, operatorID string) error
+         - PublishGrayRelease(ctx, workflowID string, version int, cfg *types.GrayReleaseConfig) error
+         - GetEffectiveVersion(ctx, workflowID string, callerID string) (*types.WorkflowVersion, error)
+      2. LifecycleManagerService 接口：
+         - PauseInstance(ctx, instanceID, operatorID string) error
+         - ResumeInstance(ctx, instanceID, operatorID string) error
+         - CancelInstance(ctx, instanceID, operatorID string) error
+         - RetryNode(ctx, instanceID, nodeID, operatorID string) error
+         - RetryInstance(ctx, instanceID, operatorID string) error
+      3. FailoverManagerService 接口（D1 已有存根，D2 正式实现）：
+         - StartFailoverWatcher(ctx context.Context) error
+         - StopFailoverWatcher() error
+         - HandleWorkerFailure(ctx, workerID string) error
+         - RescheduleOrphanedTasks(ctx context.Context) error
+      4. SubflowManagerService 接口：
+         - StartSubflow(ctx, parentInstanceID, parentNodeID, subflowID string, input map[string]interface{}, mode types.SubflowCallMode) (string, error)
+         - OnSubflowComplete(ctx, subflowInstanceID string, output map[string]interface{}) error
+         - OnSubflowFailed(ctx, subflowInstanceID, errMsg string) error
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 3: SQL Server Repository 实现扩展 + 核心服务实现
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d2-w3-t1"
+    wave: 3
+    title: "SQL Server Repository D2 扩展实现"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d2-w2-t1"]
+    files:
+      - "storage/sqlserver/repository_d2.go"
+    description: |
+      新建 storage/sqlserver/repository_d2.go，为 *Repository 实现所有 Wave 2 新增的 Repository 方法。
+      参考 storage/sqlserver/repository.go 中已有的实现风格：
+      - 使用 defaultQueryTimeout，所有查询加 context deadline
+      - 参数化查询，不拼接 SQL 字符串
+      - 使用 wrapDBErr 包装数据库错误
+      重点方法：
+      1. CreateWorkflowVersion：INSERT workflow_versions，同时将该 workflow 的其他版本的 is_current 置为 0（事务）
+      2. SetCurrentVersion：事务内 UPDATE is_current=0 WHERE workflow_id=@p1, 再 UPDATE is_current=1 WHERE workflow_id=@p1 AND version=@p2
+      3. GetEffectiveVersion：先查 gray_config，根据灰度策略返回对应版本；无灰度则返回 is_current=1 的版本
+      4. PauseWorkflowInstance / ResumeWorkflowInstance / CancelWorkflowInstance：UPDATE workflow_instances SET status/pause_time/cancel_time
+      5. GetOrphanedNodeStates：查询 status=assigned/running AND assigned_to NOT IN (activeWorkerIDs)
+
+  - task_id: "d2-w3-t2"
+    wave: 3
+    title: "版本管理服务实现"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d2-w2-t2", "d2-w3-t1"]
+    files:
+      - "engine/version_manager.go"
+    description: |
+      实现 interfaces.VersionManagerService，创建 engine/version_manager.go：
+      - versionManager struct {repo interfaces.WorkflowRepository}
+      - CreateVersion：读取当前流程定义，快照为新 version，version 号自增，存入 workflow_versions
+      - RollbackToVersion：读取目标版本 Definition，更新 workflow_definitions 表，新建一个版本记录（快照）
+      - GetEffectiveVersion：委托 repo.GetEffectiveVersion，实现灰度路由逻辑
+      - PublishGrayRelease：校验版本存在，更新 gray_config，同时确保 version 存在于 workflow_versions
+      编译时接口断言：var _ interfaces.VersionManagerService = (*versionManager)(nil)
+
+  - task_id: "d2-w3-t3"
+    wave: 3
+    title: "生命周期管控服务实现"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d2-w2-t2", "d2-w3-t1"]
+    files:
+      - "engine/lifecycle_manager.go"
+    description: |
+      实现 interfaces.LifecycleManagerService，创建 engine/lifecycle_manager.go：
+      - lifecycleManager struct {repo interfaces.WorkflowRepository, scheduler interfaces.SchedulerService}
+      - PauseInstance：查询当前 running 节点 ID 列表，调用 repo.PauseWorkflowInstance，通过 scheduler 停止继续调度
+      - ResumeInstance：查询暂停前的节点状态，调用 repo.ResumeWorkflowInstance，重新触发就绪节点的调度
+      - CancelInstance：将所有 pending/assigned 节点置为 cancelled，实例置为 cancelled
+      - RetryNode：将指定节点 status 重置为 pending，清除错误信息，触发重新调度
+      - RetryInstance：将失败节点 status 重置为 pending，实例 status 置为 running，触发重新调度
+      所有操作记录审计日志（调用 interfaces.AuditLogManager）
+      编译时接口断言：var _ interfaces.LifecycleManagerService = (*lifecycleManager)(nil)
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 4: Failover + 子流程服务 + 重试调度器
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d2-w4-t1"
+    wave: 4
+    title: "Worker Failover 管理服务实现"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d2-w3-t1", "d2-w2-t2"]
+    files:
+      - "engine/failover_manager.go"
+    description: |
+      实现 interfaces.FailoverManagerService，在已有 engine/failover_manager.go 基础上完善：
+      - failoverManager struct {repo interfaces.WorkflowRepository, scheduler interfaces.SchedulerService}
+      - StartFailoverWatcher：启动后台 goroutine，每 10s 检查一次：
+        1. 调用 repo.GetActiveWorkers() 查询 last_heartbeat > now-30s 的 workers
+        2. 调用 repo.GetOrphanedNodeStates(activeWorkerIDs) 查询孤儿任务
+        3. 调用 RescheduleOrphanedTasks 重新调度
+      - HandleWorkerFailure：立即触发对指定 worker 的任务重分配
+      - RescheduleOrphanedTasks：将孤儿节点状态置为 pending，触发 scheduler 重新分配
+      注意：使用分布式锁（Redis）保证多 Engine 集群中只有一个 Engine 执行 Failover 检查
+
+  - task_id: "d2-w4-t2"
+    wave: 4
+    title: "子流程管理服务实现"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d2-w2-t2", "d2-w3-t1"]
+    files:
+      - "engine/subflow_manager.go"
+    description: |
+      实现 interfaces.SubflowManagerService，创建 engine/subflow_manager.go：
+      - subflowManager struct {repo interfaces.WorkflowRepository, workflowSvc interfaces.WorkflowService}
+      - StartSubflow：
+        1. 检查嵌套深度（查询 parent 链，深度>5 返回错误）
+        2. 获取子流程定义有效版本
+        3. 调用 workflowSvc.StartWorkflow 创建子流程实例（携带 parentInstanceID/parentNodeID）
+        4. 同步模式：将父节点置为等待状态；异步模式：父节点直接完成
+      - OnSubflowComplete：查询父流程实例和父节点，将父节点置为 completed，触发父流程继续调度
+      - OnSubflowFailed：根据父节点 SkipOnError 配置，决定跳过还是传播失败
+      编译时接口断言：var _ interfaces.SubflowManagerService = (*subflowManager)(nil)
+
+  - task_id: "d2-w4-t3"
+    wave: 4
+    title: "重试调度器实现"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d2-w3-t1", "d2-w2-t2"]
+    files:
+      - "engine/scheduler.go"
+    description: |
+      在已有 engine/scheduler.go 基础上扩展重试调度能力：
+      1. 新增 RetryScheduler：后台 goroutine，每 5s 扫描 workflow_retry_records 表中 next_retry_at <= now 的记录
+      2. 对每条待重试记录：
+         a. 检查实例是否仍处于 running 或 retrying 状态
+         b. 调用 nodeStateRepo.UpdateNodeStatus 将节点置为 pending
+         c. 触发节点重新分配
+         d. 更新 retry_record 状态
+      3. 实现指数退避时间计算函数 calcNextRetryTime(policy *types.RetryPolicy, retryCount int) time.Time
+      4. 节点执行失败时：检查 retry_policy，若 retryCount < MaxRetryCount，创建 retry_record；否则 move to dead_letter
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 5: HTTP API 扩展
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d2-w5-t1"
+    wave: 5
+    title: "D2 HTTP API 扩展"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d2-w4-t1", "d2-w4-t2", "d2-w4-t3"]
+    files:
+      - "endpoint/http/server_d2.go"
+    description: |
+      参考 endpoint/http/server.go 的路由注册风格，新建 server_d2.go 注册 D2 新增 API：
+      版本管理 API：
+      - GET    /api/workflows/:workflowId/versions           — 查询版本历史
+      - POST   /api/workflows/:workflowId/versions           — 创建新版本（快照）
+      - POST   /api/workflows/:workflowId/versions/:version/rollback  — 回滚到指定版本
+      - POST   /api/workflows/:workflowId/versions/:version/gray      — 发布灰度版本
+      生命周期管控 API：
+      - POST   /api/instances/:instanceId/pause    — 暂停流程实例
+      - POST   /api/instances/:instanceId/resume   — 恢复流程实例
+      - POST   /api/instances/:instanceId/cancel   — 终止流程实例
+      - POST   /api/instances/:instanceId/retry    — 重试整个流程
+      - POST   /api/instances/:instanceId/nodes/:nodeId/retry  — 重试指定节点
+      死信队列 API：
+      - GET    /api/dead-letters                   — 查询死信列表
+      - POST   /api/dead-letters/:id/replay        — 重新触发死信任务
+      向 Server struct 添加 SetVersionManagerService / SetLifecycleManagerService 注入方法

@@ -1,0 +1,319 @@
+plan_id: "20260428-d3-advanced-nodes"
+plan_objective: "D3阶段 高级节点与端点 — 人工审批节点、定时触发端点、全链路审计日志、失败补偿分支、节点回调通知"
+complexity: complex
+created_at: "2026-04-28"
+target_version: "v0.7.0"
+depends_on: "20260428-d2-flow-management"
+
+tldr: |
+  D3 阶段分 5 个 Wave 顺序推进：
+  Wave 1 并行完成 D3 类型扩展与数据库 Schema；
+  Wave 2 并行扩展接口层（审批服务、审计日志、端点管理、回调）；
+  Wave 3 并行实现人工审批 NodeExecutor、定时端点调度、审计日志落地；
+  Wave 4 实现失败补偿分支路由增强、节点回调通知体系；
+  Wave 5 完成 HTTP API 扩展（人工任务管理、端点管理、审计查询）。
+  100% 向后兼容 D1/D2 接口、数据结构，人工节点收敛为 NodeExecutor 实现。
+
+open_questions:
+  - 定时端点分布式防重：Redis 分布式锁 TTL 设为几秒合适（建议 Cron 最小周期的 80%）
+  - 审计日志表与业务表分库存储还是同库？同库时需要独立连接池避免锁竞争
+  - Webhook 回调失败后的重试逻辑是否需要持久化到 DB（避免 Engine 重启丢失重试）
+
+pre_mortem:
+  overall_risk_level: medium
+  critical_failure_modes:
+    - scenario: 多人顺序审批时，第一个人审批后第二个人尚未收到通知，造成体验问题
+      likelihood: medium
+      impact: medium
+      mitigation: 审批通过后立即通过 Webhook 通知下一审批人，同时写入 approval_records 供查询
+    - scenario: 定时端点 Cron 表达式解析库不支持 7 位（含年）格式
+      likelihood: low
+      impact: low
+      mitigation: 使用 robfig/cron v3，支持 6 位标准格式；7 位（含年）通过预处理适配
+    - scenario: 审计日志批量写入时 Engine 宕机导致日志丢失
+      likelihood: low
+      impact: medium
+      mitigation: AuditLogManager 使用 channel 缓冲 + goroutine 异步批量写入，宕机后通过 Engine 重启的恢复机制补偿
+
+implementation_specification:
+  new_tables:
+    - workflow_approval_records: (id VARCHAR(64) PK, instance_id, node_id, approver, action, comment, form_data JSON, operate_time, operate_ip, status VARCHAR(32))
+    - workflow_approvals: (id VARCHAR(64) PK, instance_id, node_id, approval_mode, approvers JSON, current_approver_index INT, status, title, description, config JSON, created_at, updated_at)
+    - endpoint_configs: (id VARCHAR(64) PK, workflow_id, endpoint_type, config JSON, status VARCHAR(32) DEFAULT 'active', created_by, created_at, updated_at)
+    - endpoint_trigger_history: (id BIGINT IDENTITY PK, endpoint_id, trigger_time, instance_id, status, message)
+    - workflow_instance_logs: (id BIGINT IDENTITY PK, instance_id, node_id, workflow_id, endpoint_id, operation_type, operator, operate_ip, operate_time, before_data JSON, after_data JSON, detail, trace_id, hash NVARCHAR(64))
+  extended_tables:
+    - workflow_node_states: ADD human_task_config JSON NULL, callback_config JSON NULL
+    - workflow_definitions: ADD compensation_config JSON NULL
+
+tasks:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 1: D3 类型扩展 + 数据库 Schema
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d3-w1-t1"
+    wave: 1
+    title: "D3 类型系统扩展"
+    agent: gem-implementer
+    status: not-started
+    dependencies: []
+    files:
+      - "types/types.go"
+    description: |
+      在 types/types.go 中新增 D3 所需类型（不修改任何 D1/D2 字段）：
+      1. ApprovalStatus 枚举：pending/approved/rejected/cancelled
+      2. ApprovalMode 枚举：single/or_sign/sequential
+      3. EndpointType 扩展：EndpointTypeSchedule="schedule"（D1 已有 http 类型）
+      4. AuditOperationType 枚举：workflow.create/update/rollback/delete, instance.start/pause/resume/cancel/retry/completed/failed, node.start/completed/failed/retry/skipped, approval.submit/pass/reject/cancel, endpoint.create/update/start/stop/trigger/delete
+      5. 新增结构体：
+         - HumanTaskConfig {Title, Description, ApprovalMode, Approvers, Timeout, TimeoutAction, RejectAction, RejectGotoNodeId, FormFields, Webhook}
+         - FormField {FieldKey, FieldName, FieldType, Required, DefaultValue, Options}
+         - FormFieldOption {Label, Value}
+         - ApprovalRecord {ID, InstanceID, NodeID, Approver, Action, Comment, FormData, OperateTime, OperateIP}
+         - WorkflowApproval {ID, InstanceID, NodeID, ApprovalMode, Approvers, CurrentApproverIndex, Status, Title, Description, Config}
+         - ScheduleEndpointConfig {CronExpression, InputData, CreatedBy, MaxTriggerCount, TriggeredCount, StartTime, EndTime, MisfireStrategy}
+         - WorkflowAuditLog {ID, InstanceID, NodeID, WorkflowID, EndpointID, OperationType, Operator, OperateIP, OperateTime, BeforeData, AfterData, Detail, TraceID}
+         - NodeCallbackConfig {OnStart, OnComplete, OnFail, Timeout, RetryCount}
+      6. WorkflowNode 新增字段：HumanTaskConfig *HumanTaskConfig, CallbackConfig *NodeCallbackConfig
+
+  - task_id: "d3-w1-t2"
+    wave: 1
+    title: "D3 数据库 Schema"
+    agent: gem-implementer
+    status: not-started
+    dependencies: []
+    files:
+      - "storage/sqlserver/schema_d3.sql"
+    description: |
+      创建 storage/sqlserver/schema_d3.sql，包含 D3 所有 DDL（幂等 IF NOT EXISTS 风格）：
+      1. workflow_approval_records 表（见 implementation_specification.new_tables）
+      2. workflow_approvals 表
+      3. endpoint_configs 表（支持 http 和 schedule 两种类型）
+      4. endpoint_trigger_history 表
+      5. workflow_instance_logs 表（全链路审计日志，hash 字段预留 SHA-256 哈希链）
+      6. ALTER TABLE workflow_node_states ADD human_task_config NVARCHAR(MAX) NULL, callback_config NVARCHAR(MAX) NULL
+      7. ALTER TABLE workflow_definitions ADD compensation_config NVARCHAR(MAX) NULL
+      8. 创建关键索引：idx_approval_records_instance_node, idx_instance_logs_instance_id, idx_instance_logs_operate_time, idx_endpoint_trigger_endpoint_id
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 2: 接口扩展
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d3-w2-t1"
+    wave: 2
+    title: "审批服务 + 端点管理接口定义"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d3-w1-t1"]
+    files:
+      - "interfaces/services.go"
+    description: |
+      在 interfaces/services.go 中新增 D3 服务接口：
+      1. ApprovalService 接口（新增）：
+         - CreateApproval(ctx, approval *types.WorkflowApproval) error
+         - GetApproval(ctx, approvalID string) (*types.WorkflowApproval, error)
+         - GetApprovalByNode(ctx, instanceID, nodeID string) (*types.WorkflowApproval, error)
+         - ListPendingApprovals(ctx, approverID string, page, pageSize int) ([]*types.WorkflowApproval, int64, error)
+         - SubmitApproval(ctx, record *types.ApprovalRecord) error
+         - GetApprovalHistory(ctx, instanceID, nodeID string) ([]*types.ApprovalRecord, error)
+      2. EndpointManagerService 接口（新增）：
+         - CreateHTTPEndpoint(ctx, workflowID, createdBy string) (endpointID string, triggerURL string, err error)
+         - CreateScheduleEndpoint(ctx, workflowID string, cfg *types.ScheduleEndpointConfig) (string, error)
+         - GetEndpoint(ctx, endpointID string) (map[string]interface{}, error)
+         - UpdateEndpoint(ctx, endpointID string, cfg interface{}) error
+         - StartEndpoint(ctx, endpointID string) error
+         - StopEndpoint(ctx, endpointID string) error
+         - DeleteEndpoint(ctx, endpointID string) error
+         - ListEndpoints(ctx, workflowID string) ([]map[string]interface{}, error)
+         - GetTriggerHistory(ctx, endpointID string, page, pageSize int) ([]map[string]interface{}, int64, error)
+      3. AuditLogManager 接口扩展（D1 已有基础接口，D3 扩展）：
+         - QueryLogs(ctx, filter AuditLogFilter, page, pageSize int) ([]*types.WorkflowAuditLog, int64, error)
+         新增 AuditLogFilter struct {InstanceID, WorkflowID, NodeID, OperationType, Operator string, StartTime, EndTime *time.Time}
+
+  - task_id: "d3-w2-t2"
+    wave: 2
+    title: "审批 + 审计日志 + 端点 Repository 接口定义"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d3-w1-t1"]
+    files:
+      - "interfaces/repository.go"
+    description: |
+      在 interfaces/repository.go 中新增 D3 Repository 方法：
+      1. 审批：
+         - CreateApproval(ctx, *types.WorkflowApproval) error
+         - GetApprovalByID(ctx, id string) (*types.WorkflowApproval, error)
+         - GetApprovalByNode(ctx, instanceID, nodeID string) (*types.WorkflowApproval, error)
+         - UpdateApprovalStatus(ctx, id, status string, currentApproverIndex int) error
+         - ListPendingApprovalsByApprover(ctx, approverID string, offset, limit int) ([]*types.WorkflowApproval, int64, error)
+         - CreateApprovalRecord(ctx, *types.ApprovalRecord) error
+         - ListApprovalRecords(ctx, instanceID, nodeID string) ([]*types.ApprovalRecord, error)
+      2. 端点：
+         - CreateEndpointConfig(ctx, id, workflowID, endpointType string, config interface{}) error
+         - GetEndpointConfig(ctx, id string) (endpointType string, config interface{}, err error)
+         - UpdateEndpointConfig(ctx, id string, config interface{}) error
+         - UpdateEndpointStatus(ctx, id, status string) error
+         - DeleteEndpointConfig(ctx, id string) error
+         - ListEndpointsByWorkflow(ctx, workflowID string) ([]map[string]interface{}, error)
+         - CreateTriggerRecord(ctx, endpointID, instanceID, status, message string) error
+         - ListTriggerHistory(ctx, endpointID string, offset, limit int) ([]map[string]interface{}, int64, error)
+      3. 审计日志：
+         - BatchCreateAuditLogs(ctx, logs []*types.WorkflowAuditLog) error
+         - QueryAuditLogs(ctx, filter interfaces.AuditLogFilter, offset, limit int) ([]*types.WorkflowAuditLog, int64, error)
+         - GetLatestAuditLog(ctx) (*types.WorkflowAuditLog, error)
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 3: 核心服务实现
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d3-w3-t1"
+    wave: 3
+    title: "人工审批 NodeExecutor 实现"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d3-w2-t1", "d3-w2-t2"]
+    files:
+      - "worker/executors/human_task.go"
+      - "engine/approval_service.go"
+      - "storage/sqlserver/repository_d3.go"
+    description: |
+      1. worker/executors/human_task.go：
+         - HumanTaskExecutor implements interfaces.NodeExecutor
+         - Execute(ctx, node, input) output/error
+         - 解析 node.HumanTaskConfig，创建 WorkflowApproval 记录（调用 Engine gRPC 上报）
+         - 节点进入等待状态（返回特殊 pending 状态），由 Engine 在审批完成后推进
+         - 超时检查通过 node.Timeout 字段触发定时器
+      2. engine/approval_service.go：
+         - approvalService struct {repo interfaces.WorkflowRepository, callbackMgr interfaces.CallbackManager}
+         - 实现 ApprovalService 全部接口方法
+         - SubmitApproval：
+           a. 校验审批人是否在 approvers 列表中
+           b. 创建 ApprovalRecord
+           c. 根据 ApprovalMode 判断是否通过（单人/或签/顺序）
+           d. 通过时：触发节点完成流程（通知 scheduler 继续调度）
+           e. 驳回时：根据 RejectAction 执行终止或跳转
+         编译时断言：var _ interfaces.ApprovalService = (*approvalService)(nil)
+      3. storage/sqlserver/repository_d3.go：
+         实现所有 Wave 2 新增的 Repository 方法（审批、端点、审计日志）
+
+  - task_id: "d3-w3-t2"
+    wave: 3
+    title: "定时端点调度实现"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d3-w2-t1", "d3-w2-t2"]
+    files:
+      - "endpoint/schedule/cron.go"
+      - "engine/schedule_manager.go"
+    description: |
+      1. endpoint/schedule/cron.go（D1 存根完善）：
+         - ScheduleEndpoint struct，管理所有 cron job
+         - 使用 robfig/cron/v3 作为 cron 解析引擎
+         - AddJob(endpointID, cronExpr string, fn func())，返回 cron.EntryID
+         - RemoveJob(entryID cron.EntryID)
+         - Start() / Stop()
+      2. engine/schedule_manager.go（D1 存根 scheduleManager 完善）：
+         - 实现 StartEndpoint / StopEndpoint / DeleteEndpoint 的 schedule 类型处理
+         - 触发时：使用 Redis 分布式锁（key=endpoint:{id}:{cronTime}，TTL=55s）防重
+         - 触发成功后：调用 workflowSvc.StartWorkflow 创建流程实例，写入 trigger_history
+         - 触发失败：记录 trigger_history status=failed，发送告警（可选）
+         - 启动时从 DB 恢复所有 status=active 的 schedule 端点
+
+  - task_id: "d3-w3-t3"
+    wave: 3
+    title: "全链路审计日志落地"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d3-w2-t2"]
+    files:
+      - "engine/audit_log_manager.go"
+    description: |
+      完善 engine/audit_log_manager.go（D1 存根）：
+      - auditLogManager struct {repo interfaces.WorkflowRepository, ch chan *types.WorkflowAuditLog, prevHash string}
+      - Start()：启动后台 goroutine，从 ch 读取日志，批量（每 100 条或每 3s）写入 DB
+      - LogEvent(ctx, log *types.WorkflowAuditLog)：非阻塞写入 ch（channel size=1000）
+      - 批量写入前计算 SHA-256 哈希链（hashLogEntry 函数，chain 保存在内存中）
+      - VerifyLogChain(ctx, startTime, endTime time.Time) (bool, error)：验证指定时间段日志哈希链完整性
+      - 进程启动时从 DB 加载最新一条日志的 hash 作为链头（prevHash 初始值）
+      - QueryLogs：委托 repo.QueryAuditLogs 执行
+      编译时断言：var _ interfaces.AuditLogManager = (*auditLogManager)(nil)
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 4: 节点回调 + 失败补偿分支
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d3-w4-t1"
+    wave: 4
+    title: "节点回调与 Webhook 通知体系"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d3-w3-t1"]
+    files:
+      - "engine/callback_manager.go"
+    description: |
+      完善 engine/callback_manager.go（D1 存根）：
+      - callbackManager struct {httpClient *http.Client}
+      - httpClient 使用局部创建，Timeout=10s
+      - SendCallback(ctx, url string, payload interface{}) error
+        - POST 请求，Content-Type: application/json
+        - 失败重试最多 RetryCount 次（固定间隔 2s）
+        - 响应 2xx 算成功，其他算失败
+        - 失败时记录日志，不阻塞主流程
+      - NotifyApprover(ctx, webhookURL, approvalID, approver string) error
+        - 封装审批通知 payload，调用 SendCallback
+      - OnNodeLifecycle(ctx, event NodeLifecycleEvent)
+        - 根据 event.Type（start/complete/fail）调用对应的 CallbackConfig URL
+        - 异步执行（goroutine），不阻塞节点调度
+      编译时断言：var _ interfaces.CallbackManager = (*callbackManager)(nil)
+
+  - task_id: "d3-w4-t2"
+    wave: 4
+    title: "失败补偿分支路由增强"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d3-w3-t1"]
+    files:
+      - "engine/error_handler.go"
+    description: |
+      完善 engine/error_handler.go（D1 存根）：
+      - errorHandler struct {repo interfaces.WorkflowRepository, scheduler interfaces.SchedulerService}
+      - HandleNodeFailure(ctx, instanceID, nodeID string, err error)：
+        1. 检查 RetryPolicy，若可重试创建 retry_record（委托重试调度器）
+        2. 若不可重试或超过最大重试：
+           a. 检查节点 SkipOnError：若 true，将节点置为 skipped，继续调度后续节点
+           b. 查找 ConnectionType=failure 的出边，若有则跳转到补偿节点
+           c. 若无出边且无跳过：将实例置为 failed
+      - HandleCompensation(ctx, instanceID string, compensationNodeID string)：
+        启动补偿节点的执行
+      - HandleInstanceTimeout(ctx, instanceID string)：
+        超时后终止实例，触发补偿（若配置了 compensation_config）
+      编译时断言：var _ interfaces.ErrorHandlerService = (*errorHandler)(nil)
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Wave 5: HTTP API 扩展
+  # ─────────────────────────────────────────────────────────────────────────
+  - task_id: "d3-w5-t1"
+    wave: 5
+    title: "D3 HTTP API 扩展"
+    agent: gem-implementer
+    status: not-started
+    dependencies: ["d3-w4-t1", "d3-w4-t2"]
+    files:
+      - "endpoint/http/server_d3.go"
+    description: |
+      参考 endpoint/http/server.go 注册 D3 新增 API：
+      人工任务管理 API：
+      - GET  /api/approvals/pending           — 查询待我审批的任务（query: approverId）
+      - GET  /api/approvals/:approvalId        — 查询审批详情
+      - POST /api/approvals/:approvalId/submit — 提交审批（pass/reject + comment + formData）
+      - GET  /api/approvals/history            — 我的审批历史（query: approverId, page, pageSize）
+      端点管理 API：
+      - GET    /api/endpoints                 — 查询端点列表
+      - POST   /api/endpoints/http            — 创建 HTTP 端点
+      - POST   /api/endpoints/schedule        — 创建定时端点
+      - GET    /api/endpoints/:endpointId     — 查询端点详情
+      - PUT    /api/endpoints/:endpointId     — 更新端点配置
+      - POST   /api/endpoints/:endpointId/start   — 启动端点
+      - POST   /api/endpoints/:endpointId/stop    — 停止端点
+      - DELETE /api/endpoints/:endpointId     — 删除端点
+      - GET    /api/endpoints/:endpointId/history — 触发历史
+      审计日志 API：
+      - GET  /api/audit-logs                  — 查询审计日志（filter: instanceId/workflowId/operator/type/time range, page, pageSize）
+      - GET  /api/audit-logs/:id              — 查询单条审计日志详情
+      向 Server struct 添加 SetApprovalService / SetEndpointManagerService / SetAuditLogManager 注入方法

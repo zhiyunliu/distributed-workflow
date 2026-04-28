@@ -1705,13 +1705,6 @@ WHERE id = @id`
 // D3 私有扫描函数
 // ─────────────────────────────────────────────────────────────────────────────
 
-func nullStr(s string) sql.NullString {
-	if s == "" || s == "null" {
-		return sql.NullString{Valid: false}
-	}
-	return sql.NullString{String: s, Valid: true}
-}
-
 func scanAuditLog(row *sql.Row) (*types.WorkflowAuditLog, error) {
 	var l types.WorkflowAuditLog
 	var beforeJSON, afterJSON, hash sql.NullString

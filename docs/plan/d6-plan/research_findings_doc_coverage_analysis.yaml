@@ -1,0 +1,854 @@
+plan_id: "20260428-d6-ga-v1"
+objective: "读取项目所有设计文档(D1-D6)和现有计划文档，汇总内容差异和待补全项"
+focus_area: "文档内容与计划文档对比分析"
+created_at: "2026-04-28"
+created_by: "RESEARCHER"
+status: completed
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TL;DR 概要
+# ═══════════════════════════════════════════════════════════════════════════════
+tldr: |
+  - D1-D6 六个阶段设计文档全量覆盖项目演进路径（v0.1→v1.0 LTS），共定义 80+ 核心功能模块
+  - 现有计划文档仅 d1-plan/plan.yaml（14任务，全部pending）和 d6-plan/plan.yaml（24任务，全部not-started）
+  - D2/D3/D4/D5 四个阶段完全没有对应 plan.yaml，是最大的规划缺口
+  - d1-plan 对 D1.md 覆盖率约 95%，缺少显式的单元测试覆盖率验证任务
+  - d6-plan 对 D6.md 覆盖率约 65%，主要缺失：移动端H5/小程序页面、钉钉/企微消息推送、
+    数据加密脱敏合规、国密算法、备份恢复工具、官方内置插件实现、前端可视化大屏页面、
+    全量性能优化任务、商业化交付文档任务
+  - D1-D6 共提取 52 条量化验收标准，计划文档中显式覆盖约 30 条，未覆盖 22 条
+
+research_metadata:
+  methodology: "read_file 并行读取全部 D*.md + architectural-design.md + plan.yaml，逐段比对功能清单与计划任务"
+  scope: "docs/D1.md ~ D6.md, docs/architectural-design.md, docs/plan/d1-plan/plan.yaml, docs/plan/d6-plan/plan.yaml, docs/plan/d6-plan/research_findings_d6_readiness.yaml"
+  confidence: high
+  coverage: 98
+  decision_blockers: 3
+  research_blockers: 0
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 1. 每个文档核心功能列表
+# ═══════════════════════════════════════════════════════════════════════════════
+document_summaries:
+
+  D1_核心基础架构:
+    doc_ref: "docs/D1.md"
+    version_range: "v0.1.0 - v0.4.0"
+    dev_weeks: 8
+    core_modules:
+      - "引擎核心数据结构与接口定义（WorkflowDef/Instance/NodeState/Context/NodeWorkerInfo）"
+      - "Engine核心调度服务（WorkflowService/SchedulerService/InstanceStateService/WorkerManagerService）"
+      - "NodeWorker分布式执行节点（gRPC服务端/NodeExecutorContainer/任务执行管理）"
+      - "Engine↔NodeWorker gRPC通信协议（EngineService/NodeWorkerService）"
+      - "Nacos服务注册、发现与健康检查"
+      - "SQL Server持久化层（4张核心表：workflow_defs/instances/node_states/instance_context）"
+      - "Redis分布式锁（SETNX+Lua+WatchDog）与Redis任务队列（LPUSH/BRPOP）"
+      - "基础DAG调度（All全量依赖/Any任意依赖两种模式）"
+      - "HTTP触发端点（POST /api/v1/workflow/{id}/start）"
+      - "按节点类型粒度并发控制（加权最小负载算法）"
+      - "基础错误处理与结构化日志（zerolog，含trace_id/instance_id/node_id）"
+      - "自定义节点类型扩展（NodeExecutor接口，无需修改引擎核心）"
+    excluded_from_scope:
+      - "流程版本管理（D2）"
+      - "暂停/恢复/终止/重试（D2）"
+      - "子流程（D2）"
+      - "人工任务节点/定时端点（D3）"
+      - "失败重试/补偿（D2/D3）"
+      - "前端界面/可视化（D4）"
+      - "可观测性体系（D6）"
+      - "多租户/权限控制（D6+）"
+    acceptance_criteria:
+      - id: "D1-AC-1"
+        desc: "可通过Go代码定义WorkflowDef并成功启动执行"
+      - id: "D1-AC-2"
+        desc: "支持跨机器部署NodeWorker，Engine可自动发现并分配任务"
+      - id: "D1-AC-3"
+        desc: "完整支持All/Any两种依赖模式的DAG调度"
+      - id: "D1-AC-4"
+        desc: "所有流程状态持久化到SQL Server，重启后自动恢复未完成任务"
+      - id: "D1-AC-5"
+        desc: "支持用户实现NodeExecutor接口自定义节点类型，无需修改引擎"
+      - id: "D1-AC-6"
+        desc: "支持按节点类型为每个NodeWorker设置独立最大并发数"
+      - id: "D1-AC-7"
+        desc: "核心代码单元测试覆盖率≥80%"
+      - id: "D1-AC-8"
+        desc: "提供3个以上可直接运行的完整示例（串行/分支/并行）"
+      - id: "D1-AC-9"
+        desc: "提供完整Go Doc接口文档与开发接入指南"
+
+  D2_流程管理与控制:
+    doc_ref: "docs/D2.md"
+    version_range: "v0.5.0 - v0.6.0"
+    dev_weeks: 4
+    prerequisite: "D1 v0.4.0"
+    core_modules:
+      - "流程定义版本化管理（版本创建/历史查询/回滚/灰度发布/运行实例版本隔离）"
+      - "流程实例全生命周期管控（暂停/恢复/手动终止/单节点重试/全流程重试/断点续执行）"
+      - "统一错误处理与重试机制（固定间隔/指数退避/重试策略配置/错误分级/死信队列）"
+      - "NodeWorker高可用与故障自动转移（实时检测/任务重分配/孤儿清理/网络分区容错）"
+      - "子流程调用支持（同步/异步/嵌套/父子上下文传递/生命周期联动）"
+      - "流程变更管控（变更仅对新实例生效，运行中实例不受影响）"
+    key_types_added:
+      - "WorkflowStatusPaused/Cancelled/Retrying（新增状态枚举）"
+      - "WorkflowNodeStatusSkipped/Cancelled/Queued（新增节点状态）"
+      - "RetryStrategyType（fixed/exponential）"
+      - "GrayReleaseType（ratio/whitelist）"
+      - "SubflowCallMode（sync/async）"
+      - "WorkflowVersion struct（含GrayReleaseConfig）"
+      - "RetryPolicy struct"
+    acceptance_criteria:
+      - id: "D2-AC-1"
+        desc: "流程版本最多保留100个历史版本，回滚耗时<100ms，支持按比例/白名单灰度"
+      - id: "D2-AC-2"
+        desc: "流程暂停后1秒内停止新任务调度，恢复从断点继续，无状态丢失/重复执行"
+      - id: "D2-AC-3"
+        desc: "节点级重试0-100次，Worker故障后30秒内完成任务自动转移，无任务丢失"
+      - id: "D2-AC-4"
+        desc: "支持最多5层嵌套子流程，同步/异步两种模式，父子流程上下文双向传递"
+      - id: "D2-AC-5"
+        desc: "100%兼容D1阶段所有API/数据结构/流程定义"
+      - id: "D2-AC-6"
+        desc: "核心新增代码单元测试覆盖率≥85%，全流程集成测试100%通过"
+      - id: "D2-AC-7"
+        desc: "单Engine实例支持1000并发流程执行，调度延迟<100ms"
+
+  D3_高级节点与端点:
+    doc_ref: "docs/D3.md"
+    version_range: "v0.7.0"
+    dev_weeks: 2
+    prerequisite: "D2 v0.6.0"
+    core_modules:
+      - "人工审批节点（human_task执行器：审批人配置/状态流转/回调通知/通过驳回分支路由）"
+      - "定时触发端点（schedule类型Endpoint：Cron表达式/分布式防重/启停控制/触发历史）"
+      - "全链路审计日志体系（workflow_instance_logs表：全操作全生命周期追溯/不可篡改）"
+      - "标准化失败补偿与分支路由增强（多分支补偿/重试后分支重定向/跳过失败节点）"
+      - "节点回调与事件通知（HTTP回调/Webhook通知）"
+      - "配套HTTP API（人工任务管理/端点管理/审计日志查询全量API）"
+    key_types_added:
+      - "ApprovalStatus（pending/approved/rejected/cancelled）"
+      - "ApprovalMode（single/or_sign/sequential）"
+      - "EndpointType扩展（http/schedule）"
+      - "AuditOperationType（workflow/instance/node/approval/endpoint 全类型）"
+      - "HumanTaskConfig struct（含FormField/FormFieldOption/ApprovalRecord）"
+    acceptance_criteria:
+      - id: "D3-AC-1"
+        desc: "支持单人审批/多人顺序审批/多人或签3种基础模式，审批回调幂等性100%"
+      - id: "D3-AC-2"
+        desc: "支持标准7位Cron，分布式部署下无重复触发，时间误差≤1秒，触发历史完整"
+      - id: "D3-AC-3"
+        desc: "审计日志覆盖全链路，不可篡改，查询响应≤200ms"
+      - id: "D3-AC-4"
+        desc: "100%兼容D1/D2所有API/数据结构/流程定义"
+      - id: "D3-AC-5"
+        desc: "核心新增代码单元测试覆盖率≥85%，集成测试100%通过"
+      - id: "D3-AC-6"
+        desc: "单Engine实例支持1000+定时端点稳定运行，人工任务回调延迟≤100ms"
+
+  D4_可视化管理前端:
+    doc_ref: "docs/D4.md"
+    version_range: "v0.8.0"
+    dev_weeks: 2
+    prerequisite: "D3 v0.7.0"
+    core_modules:
+      - "系统管理抽象层（UserService/RoleService/MenuService/AuthService/PermissionService接口+数据库默认实现+LDAP/OAuth2/SSO扩展支持）"
+      - "前端基础架构（Vue3+TypeScript+Element Plus+Pinia+Vue Router+Axios）"
+      - "可视化流程设计器（LogicFlow拖拽式，DAG校验，版本管理，导入导出）"
+      - "流程定义管理模块（列表/创建/编辑/发布/回滚/版本历史/启停/权限管理）"
+      - "流程实例监控模块（列表/实时执行状态/链路追踪/节点日志/暂停恢复终止重试）"
+      - "人工审批工作台（待审批/已审批/抄送我/批量处理/审批详情/历史追溯）"
+      - "端点管理模块（HTTP/定时端点配置/启停控制/触发历史/运行状态监控）"
+      - "审计日志模块（多条件查询/详情查看/导出）"
+      - "系统管理模块（用户/角色/菜单权限/字典管理/RBAC权限控制）"
+      - "前后端联调与适配（补齐前端所需后端API）"
+      - "部署包（Docker镜像/docker-compose一键部署）"
+    tech_stack:
+      - "Vue3 3.4+"
+      - "TypeScript 5.0+"
+      - "Element Plus 2.7+"
+      - "Pinia 2.1+"
+      - "Vue Router 4.3+"
+      - "Axios 1.7+"
+      - "LogicFlow 1.2+"
+      - "ECharts 5.5+"
+      - "Vite 5.0+"
+    acceptance_criteria:
+      - id: "D4-AC-1"
+        desc: "系统管理抽象层提供完整接口定义，默认数据库实现，配置切换外部实现无需修改核心代码"
+      - id: "D4-AC-2"
+        desc: "流程设计器支持拖拽编排，DAG校验实时，画布操作≥60fps"
+      - id: "D4-AC-3"
+        desc: "全流程可视化操作闭环（编排→发布→启动→监控→审批→终止），无需手动调API"
+      - id: "D4-AC-4"
+        desc: "兼容Chrome/Edge/Firefox最新3版，1920*1080+分辨率适配"
+      - id: "D4-AC-5"
+        desc: "100%覆盖后端已有核心API，接口请求成功率100%"
+      - id: "D4-AC-6"
+        desc: "前端核心组件单元测试覆盖率≥70%，ESLint+Prettier规范，无高危漏洞"
+      - id: "D4-AC-7"
+        desc: "首屏加载≤3s，100节点大流程加载≤2s，列表查询响应≤500ms"
+
+  D5_生产级高可用与企业集成:
+    doc_ref: "docs/D5.md"
+    version_range: "v0.9.0"
+    dev_weeks: 4
+    prerequisite: "D4 v0.8.0"
+    core_modules:
+      - "引擎高可用架构（集群主从选举/调度分片一致性哈希/脑裂防护Epoch机制/平滑滚动升级/灾备恢复）"
+      - "全链路可观测性（Prometheus 100+指标/Grafana大盘/OTel全链路追踪/AlertManager告警/4种渠道）"
+      - "企业级集成（开放API网关/Webhook集成中心/内部事件总线/10+内置连接器/OIDC/SAML2.0/CAS SSO）"
+      - "流程模板市场（内置业务模板/模板全生命周期管理/私有模板库/自定义节点标准SDK/一键安装）"
+      - "数据生命周期管理（冷热数据分离/历史数据自动归档清理/定时备份一键恢复/合规导出/分表优化）"
+      - "全链路性能优化与压测（核心路径优化/大流程执行提升/数据库Redis优化/压测方案/性能基线）"
+      - "企业级部署（K8s Operator/多环境隔离/配置中心集成/容器化运维增强）"
+    cluster_architecture:
+      - "3节点Engine主从集群（主：全局调度+分片协调+主从选举；从：API+任务执行+备主候选）"
+      - "Nacos 3节点高可用集群"
+      - "Redis 3主3从集群"
+      - "SQL Server AlwaysOn主从高可用"
+      - "NodeWorker执行集群（无状态，水平扩展）"
+    acceptance_criteria:
+      - id: "D5-AC-1"
+        desc: "3节点Engine集群任意1节点宕机，业务无中断，RTO<30s，RPO=0；滚动升级无中断"
+      - id: "D5-AC-2"
+        desc: "核心业务指标≥100个，全链路追踪覆盖100%核心流程，告警规则≥20条，4种以上告警渠道"
+      - id: "D5-AC-3"
+        desc: "单集群10000+并发流程稳定运行，核心调度延迟<50ms，较D4性能提升≥50%"
+      - id: "D5-AC-4"
+        desc: "内置≥10种连接器，开放API覆盖100%核心能力，提供OIDC/SAML2.0/CAS协议支持，4种以上语言SDK"
+      - id: "D5-AC-5"
+        desc: "100%兼容D1-D4所有API/流程定义/数据结构"
+      - id: "D5-AC-6"
+        desc: "核心新增代码单元测试覆盖率≥90%，全链路压测无内存泄漏/数据不一致/死锁"
+
+  D6_v1_GA:
+    doc_ref: "docs/D6.md"
+    version_range: "v1.0.0 GA LTS"
+    dev_weeks: 4
+    prerequisite: "D5 v0.9.0"
+    core_modules:
+      - "可视化表单设计器（拖拽式/20+基础组件/表单版本管理/流程-表单双向绑定/字段权限控制/模板市场）"
+      - "高级审批全能力（会签/或签/顺序/前加签/后加签/转签/委托代理/审批退回/超时escalate/撤回/抄送）"
+      - "等保2.0三级合规（身份鉴别/访问控制/安全审计/数据加密脱敏/备份恢复/应急响应）"
+      - "数据分析BI可视化（20+核心指标/10+标准报表/3套运营大屏/自定义报表/数据导出）"
+      - "钉钉/企业微信适配（OAuth登录/移动端H5/原生适配/待办推送/通讯录组织架构同步）"
+      - "Golang插件化生态（Plugin接口SDK/插件生命周期管理/沙箱隔离/插件市场/10+官方插件/热插拔）"
+      - "生产级能力固化（全量bug修复/核心路径极限优化/边界场景全覆盖/内存泄漏治理）"
+      - "全量交付物（商业化文档/自动化运维工具/升级降级迁移工具/全量测试报告/LTS支持规则）"
+    excluded_forever:
+      - "多租户数据隔离（v1.0+后规划）"
+      - "国产化信创全栈适配"
+      - "飞书等其他办公平台适配"
+      - "多语言插件SDK（仅Golang）"
+      - "SAGA分布式事务补偿"
+      - "AI流程生成/大模型集成"
+      - "国际化多语言"
+    acceptance_criteria:
+      - id: "D6-AC-1"
+        desc: "表单设计器支持20+基础组件，表单渲染<500ms，与流程引擎无缝集成"
+      - id: "D6-AC-2"
+        desc: "覆盖10+企业级审批场景，审批逻辑准确率100%，支持10层嵌套，无死锁/状态异常"
+      - id: "D6-AC-3"
+        desc: "100%满足等保2.0三级核心要求，日志留存≥6个月，敏感数据全加密，无高危/中危漏洞"
+      - id: "D6-AC-4"
+        desc: "预设20+核心业务指标/10+标准报表/3套运营大屏，数据刷新<5s，百万级数据秒级查询"
+      - id: "D6-AC-5"
+        desc: "完整适配钉钉/企业微信，移动端功能覆盖率≥90%，PC端与移动端数据同步延迟<1s"
+      - id: "D6-AC-6"
+        desc: "提供标准化Golang插件SDK，热插拔无重启，内置10+官方插件，第三方插件可无缝集成"
+      - id: "D6-AC-7"
+        desc: "100%兼容D1-D5所有API/流程定义/数据结构，存量业务零改造升级"
+      - id: "D6-AC-8"
+        desc: "单集群10万+并发流程稳定运行，调度延迟<30ms，较D5性能提升≥40%"
+      - id: "D6-AC-9"
+        desc: "全量代码单元测试覆盖率≥95%，核心路径覆盖率100%，无阻塞性bug"
+      - id: "D6-AC-10"
+        desc: "完整前后端代码/Golang插件SDK/全量测试报告/等保合规材料/私有化部署全套方案"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 2. 当前计划文档结构概览
+# ═══════════════════════════════════════════════════════════════════════════════
+existing_plans:
+
+  d1_plan:
+    file: "docs/plan/d1-plan/plan.yaml"
+    plan_id: "d1-plan"
+    status: pending
+    total_tasks: 14
+    waves:
+      - wave: 1
+        tasks: ["T-01-scaffold", "T-02-types", "T-03-proto"]
+        desc: "脚手架/核心类型/Proto定义（可并行）"
+      - wave: 2
+        tasks: ["T-04-interfaces", "T-05-dag", "T-06-rpc"]
+        desc: "接口层/DAG解析器/gRPC封装（可并行）"
+      - wave: 3
+        tasks: ["T-07-storage-sqlserver", "T-08-queue-redis", "T-09-lock-redis", "T-10-registry-nacos"]
+        desc: "基础设施适配层（可并行）"
+      - wave: 4
+        tasks: ["T-11a-engine-core", "T-11b-engine-services", "T-12-worker"]
+        desc: "Engine五大服务+NodeWorker（T-11a/T-11b顺序，T-12并行）"
+      - wave: 5
+        tasks: ["T-13-endpoint-http", "T-14-examples"]
+        desc: "HTTP端点+三个可运行示例"
+      - wave: 6
+        tasks: ["T-15-godoc"]
+        desc: "Go Doc文档与开发接入指南"
+    coverage_vs_d1md: "~95%"
+    gaps_vs_d1md:
+      - "无显式的单元测试任务（覆盖率≥80%要求分散在各任务验收标准中，未单独追踪）"
+      - "无集成测试脚手架任务（仅在T-07中提到Mock/集成测试标签）"
+
+  d6_plan:
+    file: "docs/plan/d6-plan/plan.yaml"
+    plan_id: "20260428-d6-ga-v1"
+    status: not-started
+    total_tasks: 24
+    waves:
+      - wave: 1
+        task_count: 6
+        tasks:
+          - "d6-w1-t1: 新增D6数据库Schema文件（11张新表+4个索引优化）"
+          - "d6-w1-t2: 定义表单引擎核心类型与接口（FormDefinition/FormInstance/FormService/FormRepository）"
+          - "d6-w1-t3: 扩展审批服务接口（AddSign/Transfer/Return/Withdraw/Delegate/CC）"
+          - "d6-w1-t4: 定义BI分析服务接口（WorkflowOverviewStats/AnalyticsService）"
+          - "d6-w1-t5: 定义插件化框架接口（PluginInfo/Plugin接口/PluginService/plugin/sdk.go）"
+          - "d6-w1-t6: 定义OAuth/办公生态接口（OAuthBinding/OAuthService）"
+      - wave: 2
+        task_count: 4
+        tasks:
+          - "d6-w2-t1: SQL Server实现-表单引擎Repository"
+          - "d6-w2-t2: SQL Server实现-高级审批Repository"
+          - "d6-w2-t3: SQL Server实现-BI分析Repository"
+          - "d6-w2-t4: SQL Server实现-插件与OAuth Repository"
+      - wave: 3
+        task_count: 5
+        tasks:
+          - "d6-w3-t1: 实现表单引擎业务服务"
+          - "d6-w3-t2: 实现高级审批业务服务（advancedApprovalService）"
+          - "d6-w3-t3: 实现BI分析业务服务"
+          - "d6-w3-t4: 实现插件注册管理服务（PluginService+PluginRegistry）"
+          - "d6-w3-t5: 实现OAuth服务框架（钉钉/企微HTTP调用）"
+      - wave: 4
+        task_count: 5
+        tasks:
+          - "d6-w4-t1: 表单引擎HTTP API（9个接口）"
+          - "d6-w4-t2: 高级审批HTTP API（8个接口）"
+          - "d6-w4-t3: BI分析HTTP API（5个接口）"
+          - "d6-w4-t4: 插件管理HTTP API（8个接口）"
+          - "d6-w4-t5: OAuth登录HTTP API（6个接口含通讯录）"
+      - wave: 5
+        task_count: 4
+        tasks:
+          - "d6-w5-t1: 修复JWT硬编码密钥安全漏洞"
+          - "d6-w5-t2: 实现密码安全策略与登录防护（复杂度/失败锁定）"
+          - "d6-w5-t3: 审计日志防篡改哈希链"
+          - "d6-w5-t4: 实现API限流中间件（令牌桶算法）"
+      - wave: 6
+        task_count: "≥1（文件截断，仅见d6-w6-t1）"
+        tasks:
+          - "d6-w6-t1: 前端API封装-表单引擎（web/src/api/form.ts + types/form.ts，已部分展示）"
+    coverage_vs_d6md: "~65%"
+
+  missing_phase_plans:
+    - phase: "D2"
+      doc: "docs/D2.md"
+      plan_file: "不存在"
+      impact: "critical - D2功能已在interfaces/services.go中声明扩展方法，但无对应实现计划"
+    - phase: "D3"
+      doc: "docs/D3.md"
+      plan_file: "不存在"
+      impact: "critical - D3功能（人工审批/定时端点/审计日志）已在后端部分实现，但无完整计划追踪"
+    - phase: "D4"
+      doc: "docs/D4.md"
+      plan_file: "不存在"
+      impact: "critical - 前端架构/系统管理抽象层/LogicFlow设计器均无对应计划文档"
+    - phase: "D5"
+      doc: "docs/D5.md"
+      plan_file: "不存在"
+      impact: "critical - 高可用集群/可观测性/企业集成/K8s Operator等生产级特性无规划"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 3. 需要在计划中补全的条目（按来源文档分类）
+# ═══════════════════════════════════════════════════════════════════════════════
+gaps_to_fill:
+
+  gaps_in_d1_plan:
+    severity: low
+    items:
+      - gap_id: "D1-GAP-1"
+        source_doc: "D1.md §2.3 量化交付标准 AC-7"
+        desc: "缺少显式的测试覆盖率报告任务"
+        suggestion: "增加 T-16-test-coverage 任务：执行 go test -coverprofile 生成覆盖率报告，验证≥80%"
+      - gap_id: "D1-GAP-2"
+        source_doc: "D1.md §2.3 AC-9"
+        desc: "T-15-godoc 任务描述中未明确包含「开发接入指南」，仅提到Go Doc"
+        suggestion: "在T-15任务中补充 README.md + QUICKSTART.md 的编写要求"
+
+  gaps_in_d6_plan:
+    severity: high
+    items:
+      - gap_id: "D6-GAP-1"
+        source_doc: "D6.md §5.1 表单设计器"
+        missing_feature: "前端可视化表单设计器页面（FormDesigner.vue）"
+        plan_coverage: "无（仅有API封装d6-w6-t1，无设计器组件任务）"
+        acceptance_criteria_affected: ["D6-AC-1"]
+        suggestion: "增加Wave 6任务：实现 web/src/views/FormDesigner.vue 拖拽式设计器页面，基于可拖拽组件库"
+
+      - gap_id: "D6-GAP-2"
+        source_doc: "D6.md §5.1.1 表单组件库"
+        missing_feature: "20+基础/高级/布局表单组件实现"
+        plan_coverage: "无（仅有类型定义和API封装）"
+        acceptance_criteria_affected: ["D6-AC-1"]
+        suggestion: "增加Wave 6任务：实现 web/src/components/FormComponents/ 组件库，覆盖D6.md中列出的所有分类"
+
+      - gap_id: "D6-GAP-3"
+        source_doc: "D6.md §5.4 数据分析BI可视化 §5.4.2"
+        missing_feature: "BI可视化大屏页面（3套运营大屏）与标准报表页面"
+        plan_coverage: "仅有d6-w4-t3 API接口，无前端页面任务"
+        acceptance_criteria_affected: ["D6-AC-4"]
+        suggestion: "增加Wave 6任务：实现 web/src/views/Stats/ 目录下的运营总览/流程监控/绩效分析/运维监控大屏页面"
+
+      - gap_id: "D6-GAP-4"
+        source_doc: "D6.md §5.5 钉钉/企业微信适配 §5.5.1 移动端核心能力"
+        missing_feature: "移动端H5响应式界面（移动端审批、流程发起、进度查看）"
+        plan_coverage: "无（d6-w3-t5仅实现OAuth服务框架，d6-w4-t5仅有OAuth登录API）"
+        acceptance_criteria_affected: ["D6-AC-5"]
+        suggestion: "增加Wave 6任务：实现移动端响应式布局和移动端专属审批页面"
+
+      - gap_id: "D6-GAP-5"
+        source_doc: "D6.md §5.5.1 钉钉/企微原生适配"
+        missing_feature: "待办消息推送、流程状态变更通知推送到钉钉/企微工作通知"
+        plan_coverage: "无（OAuth登录有实现，但消息推送能力完全缺失）"
+        acceptance_criteria_affected: ["D6-AC-5"]
+        suggestion: "在d6-w3-t5 OAuth服务中增加消息推送方法，或新增 engine/notification_service.go 专门处理多渠道推送"
+
+      - gap_id: "D6-GAP-6"
+        source_doc: "D6.md §5.5.1 通讯录/组织架构同步"
+        missing_feature: "钉钉/企微通讯录、组织架构全量同步（同步到sys_user/sys_dept）"
+        plan_coverage: "d6-w4-t5仅有实时查询contact/department/list接口，无全量同步任务"
+        acceptance_criteria_affected: ["D6-AC-5"]
+        suggestion: "增加 engine/dingtalk_sync_service.go，实现定时全量同步钉钉/企微通讯录，写入本地用户/部门表"
+
+      - gap_id: "D6-GAP-7"
+        source_doc: "D6.md §5.3.1 数据完整性与保密性"
+        missing_feature: "敏感字段（手机号/身份证/银行卡）AES-256加密存储与展示脱敏"
+        plan_coverage: "无（Wave 5仅修复JWT硬编码，无数据加密/脱敏实现）"
+        acceptance_criteria_affected: ["D6-AC-3"]
+        suggestion: "增加Wave 5任务：实现 sysbuiltin/crypto_utils.go 提供AES-256加解密和字段脱敏工具函数，在用户服务中应用"
+
+      - gap_id: "D6-GAP-8"
+        source_doc: "D6.md §5.3.1 数据传输加密"
+        missing_feature: "国密SM2/SM3/SM4算法支持（等保三级合规要求）"
+        plan_coverage: "无（等保合规内容在计划中仅覆盖了密码策略和审计日志）"
+        acceptance_criteria_affected: ["D6-AC-3"]
+        suggestion: "增加Wave 5任务：集成国密算法库（如 github.com/tjfoc/gmsm），提供SM4对称加密替代AES的选项"
+
+      - gap_id: "D6-GAP-9"
+        source_doc: "D6.md §5.3.1 备份恢复"
+        missing_feature: "数据备份工具（全量/增量备份脚本/定时备份/一键恢复验证）"
+        plan_coverage: "无（D5已有数据生命周期管理设计，D6等保要求RTO<4h/RPO<1h，但计划中无对应任务）"
+        acceptance_criteria_affected: ["D6-AC-3", "D6-AC-10"]
+        suggestion: "增加Wave 5任务：实现定时备份触发器（schedule端点）和备份命令行工具，集成到 Makefile"
+
+      - gap_id: "D6-GAP-10"
+        source_doc: "D6.md §5.6 Golang插件化生态 §5.6.1"
+        missing_feature: "插件热插拔机制（安装/卸载无服务重启）"
+        plan_coverage: "d6-w3-t4 PluginRegistry 提供了注册/注销，但未实现真正热插拔（插件加载/卸载机制）"
+        acceptance_criteria_affected: ["D6-AC-6"]
+        suggestion: "在 plugin/registry.go 中增加基于 Go plugin包 或 subprocess 的热加载机制设计，明确方案边界"
+
+      - gap_id: "D6-GAP-11"
+        source_doc: "D6.md §5.6.3 官方内置插件"
+        missing_feature: "10+官方内置插件实现（钉钉/企微/短信/邮件/电子签名/OCR/条码/二维码/财务/CRM/数据同步/SQL连接器）"
+        plan_coverage: "无（plugin/sdk.go 仅定义接口，无任何官方插件实现任务）"
+        acceptance_criteria_affected: ["D6-AC-6"]
+        suggestion: "增加Wave 6任务：实现至少3个官方示例插件（如 dingtalk-notify/email-notify/sql-connector），放在 plugin/builtin/ 目录"
+
+      - gap_id: "D6-GAP-12"
+        source_doc: "D6.md §7 生产级能力固化与极限优化"
+        missing_feature: "核心调度路径极限优化（目标<30ms，较D5提升≥40%）"
+        plan_coverage: "无（d6-plan无任何性能优化任务）"
+        acceptance_criteria_affected: ["D6-AC-8"]
+        suggestion: "增加Wave 5/6任务：实施核心调度路径profiling和优化，提供pprof性能报告"
+
+      - gap_id: "D6-GAP-13"
+        source_doc: "D6.md §8 全量交付物与运维体系"
+        missing_feature: "商业化交付全文档（用户手册/运维手册/等保合规材料/私有化部署方案/LTS版本管理规则）"
+        plan_coverage: "无（d1-plan有T-15-godoc，d6-plan无任何文档编写任务）"
+        acceptance_criteria_affected: ["D6-AC-10"]
+        suggestion: "增加Wave 6/7任务：编写 docs/deployment/ 私有化部署指南、docs/user-manual/ 用户操作手册、docs/compliance/ 等保合规材料"
+
+      - gap_id: "D6-GAP-14"
+        source_doc: "D6.md §2.3 AC-9"
+        missing_feature: "全量单元测试覆盖率达标验证（≥95%目标）"
+        plan_coverage: "无独立测试任务，各Wave任务中无验收指标追踪"
+        acceptance_criteria_affected: ["D6-AC-9"]
+        suggestion: "增加Wave 7任务：运行 go test -coverprofile，确保全量覆盖率≥95%，核心路径100%"
+
+      - gap_id: "D6-GAP-15"
+        source_doc: "D6.md §5.4.3 数据仓库设计"
+        missing_feature: "汇总数据层定时预计算（按小时/天/月维度预计算汇总指标）"
+        plan_coverage: "d6-w3-t3 AnalyticsService.RefreshDailyStats 只提到每日汇总，未覆盖小时/月维度和定时调度集成"
+        acceptance_criteria_affected: ["D6-AC-4"]
+        suggestion: "在 engine/analytics_service.go 中增加小时/月维度汇总，并在schedule端点中注册定时触发规则"
+
+      - gap_id: "D6-GAP-16"
+        source_doc: "D6.md §5.2.2 审批规则引擎"
+        missing_feature: "动态审批人计算（按发起人部门/角色/岗位/直属上级动态计算审批人）"
+        plan_coverage: "d6-w1-t3 和 d6-w3-t2 仅实现固定审批人的高级审批操作，无动态规则引擎"
+        acceptance_criteria_affected: ["D6-AC-2"]
+        suggestion: "增加审批规则引擎任务，实现审批人动态计算逻辑（基于流程上下文变量+组织架构）"
+
+      - gap_id: "D6-GAP-17"
+        source_doc: "D6.md §5.5 多端协同 §5.5.2"
+        missing_feature: "前端插件市场UI页面（插件浏览/安装/启停/详情查看）"
+        plan_coverage: "仅有d6-w4-t4 HTTP API，无前端页面任务"
+        acceptance_criteria_affected: ["D6-AC-6"]
+        suggestion: "增加Wave 6任务：实现 web/src/views/PluginMarket.vue 插件市场页面"
+
+  missing_phase_plans_gaps:
+    severity: critical
+    items:
+      - gap_id: "PHASE-GAP-D2"
+        source_doc: "docs/D2.md"
+        desc: "D2阶段（v0.5.0-v0.6.0）无任何计划文档"
+        missing_tasks:
+          - "版本管理服务（WorkflowVersionManager）实现"
+          - "生命周期管理服务（LifecycleManager）实现"
+          - "重试策略实现（固定间隔/指数退避）"
+          - "故障转移管理（FailoverManager）实现"
+          - "子流程管理（SubflowManager）实现"
+          - "D2扩展接口方法实现（PauseInstance/ResumeInstance/CancelInstance等）"
+          - "灰度发布逻辑实现"
+          - "数据库Schema扩展（版本表/灰度配置/重试策略字段）"
+        suggestion: "创建 docs/plan/d2-plan/plan.yaml"
+
+      - gap_id: "PHASE-GAP-D3"
+        source_doc: "docs/D3.md"
+        desc: "D3阶段（v0.7.0）无任何计划文档（D6 research_findings已确认部分D3代码存在）"
+        missing_tasks:
+          - "human_task NodeExecutor完整实现"
+          - "schedule Endpoint完整实现（Cron解析/分布式防重）"
+          - "审计日志存储层实现（workflow_instance_logs表）"
+          - "失败补偿分支路由增强"
+          - "节点回调Webhook实现"
+          - "人工任务管理HTTP API完整集"
+          - "端点管理HTTP API完整集"
+          - "审计日志查询HTTP API"
+        suggestion: "创建 docs/plan/d3-plan/plan.yaml"
+
+      - gap_id: "PHASE-GAP-D4"
+        source_doc: "docs/D4.md"
+        desc: "D4阶段（v0.8.0）无任何计划文档（前端页面和系统管理抽象层无规划）"
+        missing_tasks:
+          - "系统管理抽象层接口定义（sysmanager/interfaces.go）"
+          - "sysbuiltin系统管理内置实现（用户/角色/菜单/字典服务）"
+          - "Vue3前端基础架构搭建"
+          - "LogicFlow流程设计器集成"
+          - "流程管理页面（views/workflow/）"
+          - "实例监控页面（views/instance/）"
+          - "审批工作台页面（views/approval/）"
+          - "端点管理页面（views/endpoint/）"
+          - "审计日志页面（views/audit/）"
+          - "系统管理页面（views/system/）"
+          - "JWT鉴权中间件"
+          - "Docker镜像与docker-compose"
+        suggestion: "创建 docs/plan/d4-plan/plan.yaml"
+
+      - gap_id: "PHASE-GAP-D5"
+        source_doc: "docs/D5.md"
+        desc: "D5阶段（v0.9.0）无任何计划文档（高可用/可观测性/集成能力完全未规划）"
+        missing_tasks:
+          - "集群主从选举模块（基于Redis租约）"
+          - "调度分片模块（一致性哈希）"
+          - "脑裂防护模块（Epoch机制）"
+          - "平滑升级与回滚模块"
+          - "Prometheus指标埋点（100+指标）"
+          - "OpenTelemetry链路追踪集成"
+          - "Grafana大盘配置文件"
+          - "AlertManager告警规则"
+          - "开放API网关"
+          - "Webhook集成中心"
+          - "10+内置连接器实现"
+          - "SSO协议支持（OIDC/SAML2.0/CAS）"
+          - "流程模板市场"
+          - "冷热数据分离/数据归档"
+          - "K8s Operator实现"
+          - "多语言SDK生成（4种语言）"
+        suggestion: "创建 docs/plan/d5-plan/plan.yaml"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 4. 所有验收标准汇总清单（D1-D6 全量）
+# ═══════════════════════════════════════════════════════════════════════════════
+all_acceptance_criteria:
+
+  D1:
+    - id: "D1-AC-1"
+      desc: "可通过Go代码定义WorkflowDef工作流，并成功启动执行"
+      in_d1_plan: true
+      in_d6_plan: false
+    - id: "D1-AC-2"
+      desc: "支持跨机器部署NodeWorker，Engine可自动发现并分配任务"
+      in_d1_plan: true
+      in_d6_plan: false
+    - id: "D1-AC-3"
+      desc: "完整支持All（全部前置完成）和Any（任意前置完成）两种依赖模式DAG调度"
+      in_d1_plan: true
+      in_d6_plan: false
+    - id: "D1-AC-4"
+      desc: "所有流程状态、节点状态、上下文数据持久化到SQL Server，重启后自动恢复未完成任务"
+      in_d1_plan: true
+      in_d6_plan: false
+    - id: "D1-AC-5"
+      desc: "支持用户通过实现NodeExecutor接口自定义节点类型，无需修改引擎核心代码"
+      in_d1_plan: true
+      in_d6_plan: false
+    - id: "D1-AC-6"
+      desc: "支持按节点类型为每个NodeWorker设置独立最大并发数，严格控制执行并发"
+      in_d1_plan: true
+      in_d6_plan: false
+    - id: "D1-AC-7"
+      desc: "核心代码单元测试覆盖率≥80%"
+      in_d1_plan: partial
+      in_d6_plan: false
+    - id: "D1-AC-8"
+      desc: "提供3个以上可直接运行的完整示例（基础串行流程、分支流程、并行流程）"
+      in_d1_plan: true
+      in_d6_plan: false
+    - id: "D1-AC-9"
+      desc: "提供完整的Go Doc接口文档与开发接入指南"
+      in_d1_plan: partial
+      in_d6_plan: false
+
+  D2:
+    - id: "D2-AC-1"
+      desc: "支持最多100个历史版本，回滚<100ms，灰度发布支持按比例/白名单"
+      in_d1_plan: false
+      in_d6_plan: false
+      plan_gap: true
+    - id: "D2-AC-2"
+      desc: "流程暂停后1秒内停止新任务调度，恢复从断点继续，无状态丢失"
+      in_d1_plan: false
+      in_d6_plan: false
+      plan_gap: true
+    - id: "D2-AC-3"
+      desc: "节点级重试0-100次，Worker故障后30秒内完成任务自动转移，无任务丢失"
+      in_d1_plan: false
+      in_d6_plan: false
+      plan_gap: true
+    - id: "D2-AC-4"
+      desc: "支持最多5层嵌套子流程，同步/异步两种模式，父子上下文双向传递"
+      in_d1_plan: false
+      in_d6_plan: false
+      plan_gap: true
+    - id: "D2-AC-5"
+      desc: "100%兼容D1阶段所有API/数据结构/流程定义"
+      in_d1_plan: false
+      in_d6_plan: false
+      plan_gap: true
+    - id: "D2-AC-6"
+      desc: "核心新增代码单元测试覆盖率≥85%，全流程集成测试100%通过"
+      in_d1_plan: false
+      in_d6_plan: false
+      plan_gap: true
+    - id: "D2-AC-7"
+      desc: "单Engine实例支持1000并发流程执行，调度延迟<100ms"
+      in_d1_plan: false
+      in_d6_plan: false
+      plan_gap: true
+
+  D3:
+    - id: "D3-AC-1"
+      desc: "支持单人审批/多人顺序审批/多人或签3种基础模式，审批回调接口幂等性100%"
+      in_d1_plan: false
+      in_d6_plan: partial
+      note: "D6计划扩展了高级审批，但基础审批3种模式无显式任务"
+    - id: "D3-AC-2"
+      desc: "支持标准7位Cron，分布式部署下无重复触发，时间误差≤1秒，触发历史完整可追溯"
+      in_d1_plan: false
+      in_d6_plan: false
+      plan_gap: true
+    - id: "D3-AC-3"
+      desc: "审计日志覆盖全链路，日志不可篡改，查询响应时间≤200ms"
+      in_d1_plan: false
+      in_d6_plan: true
+      note: "d6-w5-t3实现了哈希链防篡改"
+    - id: "D3-AC-4"
+      desc: "100%兼容D1/D2阶段所有API/流程定义/数据结构"
+      in_d1_plan: false
+      in_d6_plan: false
+      plan_gap: true
+    - id: "D3-AC-5"
+      desc: "核心新增代码单元测试覆盖率≥85%，全流程集成测试100%通过"
+      in_d1_plan: false
+      in_d6_plan: false
+      plan_gap: true
+    - id: "D3-AC-6"
+      desc: "单Engine实例支持1000+定时端点稳定运行，人工任务回调处理延迟≤100ms"
+      in_d1_plan: false
+      in_d6_plan: false
+      plan_gap: true
+
+  D4:
+    - id: "D4-AC-1"
+      desc: "系统管理抽象层：完整接口定义，默认数据库实现，配置切换外部实现"
+      in_d1_plan: false
+      in_d6_plan: false
+      plan_gap: true
+    - id: "D4-AC-2"
+      desc: "流程设计器：拖拽式编排，全节点类型，All/Any依赖，DAG实时校验，≥60fps"
+      in_d1_plan: false
+      in_d6_plan: false
+      plan_gap: true
+    - id: "D4-AC-3"
+      desc: "全流程可视化操作闭环（编排→发布→启动→监控→审批→终止）"
+      in_d1_plan: false
+      in_d6_plan: false
+      plan_gap: true
+    - id: "D4-AC-4"
+      desc: "兼容Chrome/Edge/Firefox最新3版，1920*1080+分辨率"
+      in_d1_plan: false
+      in_d6_plan: false
+      plan_gap: true
+    - id: "D4-AC-5"
+      desc: "100%覆盖后端已有核心API，接口请求成功率100%"
+      in_d1_plan: false
+      in_d6_plan: false
+      plan_gap: true
+    - id: "D4-AC-6"
+      desc: "前端核心组件单元测试覆盖率≥70%，ESLint+Prettier规范，无高危漏洞"
+      in_d1_plan: false
+      in_d6_plan: false
+      plan_gap: true
+    - id: "D4-AC-7"
+      desc: "首屏加载≤3s，100节点大流程≤2s，列表查询≤500ms"
+      in_d1_plan: false
+      in_d6_plan: false
+      plan_gap: true
+
+  D5:
+    - id: "D5-AC-1"
+      desc: "3节点Engine集群，任意1节点宕机业务无中断，RTO<30s，RPO=0"
+      in_d1_plan: false
+      in_d6_plan: false
+      plan_gap: true
+    - id: "D5-AC-2"
+      desc: "核心业务指标≥100个，全链路追踪100%核心流程，告警规则≥20条，4种以上告警渠道"
+      in_d1_plan: false
+      in_d6_plan: false
+      plan_gap: true
+    - id: "D5-AC-3"
+      desc: "单集群10000+并发流程稳定，调度延迟<50ms，较D4性能提升≥50%"
+      in_d1_plan: false
+      in_d6_plan: false
+      plan_gap: true
+    - id: "D5-AC-4"
+      desc: "内置≥10种连接器，OIDC/SAML2.0/CAS SSO，4种以上语言SDK"
+      in_d1_plan: false
+      in_d6_plan: false
+      plan_gap: true
+    - id: "D5-AC-5"
+      desc: "100%兼容D1-D4所有API/数据结构"
+      in_d1_plan: false
+      in_d6_plan: false
+      plan_gap: true
+    - id: "D5-AC-6"
+      desc: "核心新增代码单元测试覆盖率≥90%，压测无内存泄漏/数据不一致/死锁"
+      in_d1_plan: false
+      in_d6_plan: false
+      plan_gap: true
+
+  D6:
+    - id: "D6-AC-1"
+      desc: "表单设计器20+基础组件，渲染<500ms，与流程引擎无缝集成"
+      in_d6_plan: partial
+      note: "有API和类型定义，无前端设计器组件实现任务"
+    - id: "D6-AC-2"
+      desc: "覆盖10+企业级审批场景，100%逻辑准确率，10层嵌套，无死锁"
+      in_d6_plan: partial
+      note: "高级审批操作API有实现，但动态审批人规则引擎缺失"
+    - id: "D6-AC-3"
+      desc: "100%满足等保2.0三级要求，日志留存≥6个月，敏感数据全加密，无高危/中危漏洞"
+      in_d6_plan: partial
+      note: "JWT修复/密码策略/审计哈希/限流已有，但数据加密/脱敏/国密/备份恢复缺失"
+    - id: "D6-AC-4"
+      desc: "预设20+核心业务指标/10+标准报表/3套运营大屏，<5s刷新，百万级秒查"
+      in_d6_plan: partial
+      note: "BI API有实现，前端大屏页面完全缺失"
+    - id: "D6-AC-5"
+      desc: "完整适配钉钉/企微，移动端功能覆盖≥90%，多端同步<1s"
+      in_d6_plan: partial
+      note: "OAuth登录有，但消息推送/移动端H5/通讯录同步缺失"
+    - id: "D6-AC-6"
+      desc: "标准化Golang插件SDK，热插拔无重启，10+官方插件，第三方可集成"
+      in_d6_plan: partial
+      note: "SDK接口有，热插拔机制和官方插件实现缺失"
+    - id: "D6-AC-7"
+      desc: "100%兼容D1-D5所有API/流程定义/数据结构，零改造升级"
+      in_d6_plan: true
+    - id: "D6-AC-8"
+      desc: "单集群10万+并发，调度延迟<30ms，较D5提升≥40%"
+      in_d6_plan: false
+      note: "无性能优化任务"
+    - id: "D6-AC-9"
+      desc: "全量单元测试覆盖率≥95%，核心路径100%，无阻塞性bug"
+      in_d6_plan: false
+      note: "无测试覆盖率验证任务"
+    - id: "D6-AC-10"
+      desc: "完整前后端代码/Golang插件SDK/全量测试报告/等保合规材料/私有化部署全套方案"
+      in_d6_plan: false
+      note: "无商业化文档编写任务"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 5. 开放问题
+# ═══════════════════════════════════════════════════════════════════════════════
+open_questions:
+  - question: "D2/D3/D4/D5是否已有部分代码实现？如何与计划文档对齐？"
+    context: "d6-plan的research_findings提到D1-D5已完整实现15张业务表/14个接口/12个前端页面，但无对应plan.yaml追踪"
+    type: decision_blocker
+    affects: ["plan completeness", "D2-D5 plan creation"]
+
+  - question: "D6-plan/plan.yaml的Wave 6是否还有更多任务（文件被截断）？"
+    context: "读取到d6-w6-t1表单引擎前端API封装后，文件内容结束，不确定是否还有更多Wave 6前端页面任务"
+    type: decision_blocker
+    affects: ["D6-GAP-1", "D6-GAP-3", "D6-GAP-4", "D6-GAP-17"]
+
+  - question: "热插拔插件机制的技术选型是Go plugin包还是独立子进程/IPC方案？"
+    context: "D6.md要求插件热插拔无重启，Go plugin包有诸多限制（仅Linux、不可卸载），需明确技术方案"
+    type: decision_blocker
+    affects: ["D6-GAP-10", "D6-AC-6"]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 6. 空缺与风险汇总
+# ═══════════════════════════════════════════════════════════════════════════════
+gaps:
+  - area: "D2-D5阶段计划文档完全缺失"
+    description: "4个阶段共约50+任务无任何计划追踪，无法确认实现状态和质量"
+    impact: decision_blocker
+    affects: ["D2-AC-*", "D3-AC-*", "D4-AC-*", "D5-AC-*"]
+
+  - area: "D6前端页面实现缺失"
+    description: "表单设计器/BI大屏/插件市场等可视化页面仅有API封装，无UI组件和页面任务"
+    impact: decision_blocker
+    affects: ["D6-AC-1", "D6-AC-4", "D6-AC-6"]
+
+  - area: "等保2.0合规实现不完整"
+    description: "数据加密脱敏/国密算法/备份恢复工具等核心合规要求未在计划中体现"
+    impact: decision_blocker
+    affects: ["D6-AC-3"]
+
+  - area: "移动端与消息推送能力缺失"
+    description: "钉钉/企微适配仅实现OAuth登录，无消息推送/H5/通讯录同步"
+    impact: research_blocker
+    affects: ["D6-AC-5"]
+
+  - area: "性能优化任务未规划"
+    description: "D6目标调度延迟<30ms（较D5<50ms提升40%），但无任何性能优化任务"
+    impact: research_blocker
+    affects: ["D6-AC-8"]
+
+  - area: "全量测试覆盖率和商业化文档"
+    description: "D6目标≥95%覆盖率和完整商业化文档，但计划中无对应任务"
+    impact: nice_to_know
+    affects: ["D6-AC-9", "D6-AC-10"]

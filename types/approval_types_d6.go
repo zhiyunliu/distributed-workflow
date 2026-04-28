@@ -2,21 +2,13 @@ package types
 
 import "time"
 
-// ApprovalMode 审批模式
-type ApprovalMode string
-
 const (
 	ApprovalModeCountersign ApprovalMode = "countersign" // 会签：需所有审批人全部通过
 	ApprovalModeOrsign      ApprovalMode = "orsign"      // 或签：任意一人通过即可
-	ApprovalModeSequential  ApprovalMode = "sequential"  // 顺序审批：按指定顺序依次审批
 )
 
 // ApprovalStatus D6扩展状态常量
 const (
-	ApprovalStatusPending     = "pending"      // 待审批
-	ApprovalStatusApproved    = "approved"     // 已通过
-	ApprovalStatusRejected    = "rejected"     // 已驳回
-	ApprovalStatusCancelled   = "cancelled"    // 已取消
 	ApprovalStatusWaitingSign = "waiting_sign" // 待会签
 	ApprovalStatusWaitingSeq  = "waiting_seq"  // 待顺序审批
 	ApprovalStatusAddSign     = "add_sign"     // 加签中
