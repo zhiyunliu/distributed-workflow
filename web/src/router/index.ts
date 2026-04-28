@@ -21,6 +21,12 @@ const router = createRouter({
         },
         // ── 工作流管理 ────────────────────────────────────────────────
         {
+          path: 'template/market',
+          name: 'TemplateMarket',
+          component: () => import('@/views/template/TemplateMarket.vue'),
+          meta: { title: '模板市场', icon: 'Grid' },
+        },
+        {
           path: 'workflow/list',
           name: 'WorkflowList',
           component: () => import('@/views/workflow/WorkflowList.vue'),

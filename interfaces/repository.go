@@ -116,6 +116,22 @@ type WorkflowRepository interface {
 	ListEndpoints(filter types.EndpointFilter, page, pageSize int) ([]*types.WorkflowEndpoint, int64, error)
 	// UpdateEndpointTriggeredCount 更新端点触发计数
 	UpdateEndpointTriggeredCount(endpointID string, count int) error
+
+	// ─── 流程模板（D5新增） ──────────────────────────────────────────
+	// CreateWorkflowTemplate 创建流程模板
+	CreateWorkflowTemplate(template *types.WorkflowTemplate) error
+	// UpdateWorkflowTemplate 更新流程模板
+	UpdateWorkflowTemplate(template *types.WorkflowTemplate) error
+	// GetWorkflowTemplate 获取流程模板详情
+	GetWorkflowTemplate(templateID string) (*types.WorkflowTemplate, error)
+	// ListWorkflowTemplates 查询流程模板列表
+	ListWorkflowTemplates(filter types.WorkflowTemplateFilter, page, pageSize int) ([]*types.WorkflowTemplate, int64, error)
+	// PublishWorkflowTemplate 发布流程模板
+	PublishWorkflowTemplate(templateID string, version string, updatedAt time.Time) error
+	// IncrementWorkflowTemplateInstallCount 增加模板安装次数
+	IncrementWorkflowTemplateInstallCount(templateID string) error
+	// ListWorkflowTemplateCategories 查询模板分类
+	ListWorkflowTemplateCategories() ([]*types.WorkflowTemplateCategory, error)
 }
 
 // RedisRepository Redis 存储接口

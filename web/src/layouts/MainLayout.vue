@@ -13,6 +13,7 @@ const menuItems = [
     title: '工作流管理',
     icon: 'Setting',
     children: [
+      { title: '模板市场', icon: 'Grid', path: '/template/market' },
       { title: '流程定义', icon: 'List', path: '/workflow/list' },
       { title: '流程设计器', icon: 'Edit', path: '/workflow/designer' },
     ],

@@ -18,6 +18,7 @@ type Server struct {
 	approvalSvc interfaces.ApprovalService
 	auditSvc    interfaces.AuditLogService
 	endpointSvc interfaces.EndpointManagerService
+	templateSvc interfaces.TemplateService
 	// D4: 系统管理
 	sysMgr    sysmanager.Manager
 	jwtSecret string

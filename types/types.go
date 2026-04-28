@@ -164,6 +164,31 @@ const (
 	AuditOpEndpointStop    AuditOperationType = "endpoint.stop"
 	AuditOpEndpointTrigger AuditOperationType = "endpoint.trigger"
 	AuditOpEndpointDelete  AuditOperationType = "endpoint.delete"
+	// 模板相关（D5新增）
+	AuditOpTemplateCreate  AuditOperationType = "template.create"
+	AuditOpTemplateUpdate  AuditOperationType = "template.update"
+	AuditOpTemplatePublish AuditOperationType = "template.publish"
+	AuditOpTemplateInstall AuditOperationType = "template.install"
+	AuditOpTemplateImport  AuditOperationType = "template.import"
+	AuditOpTemplateExport  AuditOperationType = "template.export"
+)
+
+// WorkflowTemplateStatus 流程模板状态（D5新增）
+type WorkflowTemplateStatus int
+
+const (
+	WorkflowTemplateStatusDraft     WorkflowTemplateStatus = 0 // 草稿
+	WorkflowTemplateStatusPublished WorkflowTemplateStatus = 1 // 已发布
+	WorkflowTemplateStatusOffline   WorkflowTemplateStatus = 2 // 已下架
+)
+
+// WorkflowTemplateVisibleScope 模板可见范围（D5新增）
+type WorkflowTemplateVisibleScope int
+
+const (
+	WorkflowTemplateVisibleScopeCompany WorkflowTemplateVisibleScope = 1 // 全公司可见
+	WorkflowTemplateVisibleScopeDept    WorkflowTemplateVisibleScope = 2 // 指定部门可见
+	WorkflowTemplateVisibleScopeUsers   WorkflowTemplateVisibleScope = 3 // 指定人员可见
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -650,4 +675,52 @@ type EndpointFilter struct {
 	Type       EndpointType
 	WorkflowID string
 	Disabled   *bool
+}
+
+// WorkflowTemplateCategory 模板分类（D5新增）
+type WorkflowTemplateCategory struct {
+	CategoryID   int64     `json:"categoryId"`
+	CategoryName string    `json:"categoryName"`
+	ParentID     int64     `json:"parentId"`
+	Sort         int       `json:"sort"`
+	Description  string    `json:"description"`
+	CreatedAt    time.Time `json:"createdAt"`
+}
+
+// WorkflowTemplate 流程模板（D5新增）
+type WorkflowTemplate struct {
+	TemplateID   string                       `json:"templateId"`
+	TemplateName string                       `json:"templateName"`
+	CategoryID   int64                        `json:"categoryId"`
+	CategoryName string                       `json:"categoryName"`
+	Description  string                       `json:"description"`
+	WorkflowDef  *WorkflowDef                 `json:"workflowDef"`
+	Version      string                       `json:"version"`
+	Author       string                       `json:"author"`
+	Tags         []string                     `json:"tags"`
+	Icon         string                       `json:"icon"`
+	Status       WorkflowTemplateStatus       `json:"status"`
+	VisibleScope WorkflowTemplateVisibleScope `json:"visibleScope"`
+	VisibleRange []string                     `json:"visibleRange"`
+	InstallCount int                          `json:"installCount"`
+	StartCount   int                          `json:"startCount"`
+	CreatedAt    time.Time                    `json:"createdAt"`
+	UpdatedAt    time.Time                    `json:"updatedAt"`
+}
+
+// WorkflowTemplateFilter 模板市场查询过滤器（D5新增）
+type WorkflowTemplateFilter struct {
+	Keyword        string
+	CategoryID     int64
+	Status         *WorkflowTemplateStatus
+	Author         string
+	OnlyPublished  bool
+	VisibleToUser  string
+	VisibleDeptIDs []string
+}
+
+// WorkflowTemplateInstallResult 模板安装结果（D5新增）
+type WorkflowTemplateInstallResult struct {
+	TemplateID string `json:"templateId"`
+	WorkflowID string `json:"workflowId"`
 }

@@ -205,3 +205,25 @@ type EndpointManagerService interface {
 	// StopScheduleManager 停止定时调度器
 	StopScheduleManager() error
 }
+
+// TemplateService 流程模板服务接口（D5新增）
+type TemplateService interface {
+	// ListTemplates 查询模板市场列表
+	ListTemplates(filter types.WorkflowTemplateFilter, page, pageSize int) ([]*types.WorkflowTemplate, int64, error)
+	// GetTemplate 获取模板详情
+	GetTemplate(templateID string) (*types.WorkflowTemplate, error)
+	// CreateTemplate 创建模板
+	CreateTemplate(template *types.WorkflowTemplate) (string, error)
+	// UpdateTemplate 更新模板
+	UpdateTemplate(template *types.WorkflowTemplate) error
+	// PublishTemplate 发布模板
+	PublishTemplate(templateID string) error
+	// InstallTemplate 安装模板到流程库
+	InstallTemplate(templateID string, operator string) (*types.WorkflowTemplateInstallResult, error)
+	// ImportTemplate 导入模板
+	ImportTemplate(template *types.WorkflowTemplate) (string, error)
+	// ExportTemplate 导出模板
+	ExportTemplate(templateID string) (*types.WorkflowTemplate, error)
+	// ListCategories 查询模板分类列表
+	ListCategories() ([]*types.WorkflowTemplateCategory, error)
+}

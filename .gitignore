@@ -31,3 +31,8 @@ go.work.sum
 # .idea/
 # .vscode/
 go.sum 
+
+node_modules/
+dist/
+*.log
+

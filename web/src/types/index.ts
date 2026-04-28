@@ -155,6 +155,40 @@ export interface AuditLog {
   afterData: string
 }
 
+export interface WorkflowTemplateCategory {
+  categoryId: number
+  categoryName: string
+  parentId: number
+  sort: number
+  description: string
+  createdAt: string
+}
+
+export interface WorkflowTemplate {
+  templateId: string
+  templateName: string
+  categoryId: number
+  categoryName: string
+  description: string
+  workflowDef?: WorkflowDef
+  version: string
+  author: string
+  tags: string[]
+  icon: string
+  status: number
+  visibleScope: number
+  visibleRange: string[]
+  installCount: number
+  startCount: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface WorkflowTemplateInstallResult {
+  templateId: string
+  workflowId: string
+}
+
 // 分页响应
 export interface PageResult<T> {
   list: T[]

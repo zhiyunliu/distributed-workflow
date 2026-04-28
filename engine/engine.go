@@ -36,6 +36,7 @@ type Engine struct {
 	approvalSvc interfaces.ApprovalService
 	auditSvc    interfaces.AuditLogService
 	endpointMgr interfaces.EndpointManagerService
+	templateSvc interfaces.TemplateService
 }
 
 // New 创建引擎实例
@@ -79,6 +80,7 @@ func New(
 	approvalSvcImpl := NewApprovalService(repo, stateImpl, auditLogMgr).(*approvalServiceImpl)
 	approvalSvcImpl.SetScheduler(sched)
 	endpointMgr := NewEndpointManager(repo, auditLogMgr, svc)
+	templateSvc := NewTemplateService(repo, svc, auditLogMgr)
 
 	grpcServer := grpc.NewServer()
 	engineSrv.RegisterServer(grpcServer)
@@ -98,6 +100,7 @@ func New(
 		approvalSvc: approvalSvcImpl,
 		auditSvc:    auditSvc,
 		endpointMgr: endpointMgr,
+		templateSvc: templateSvc,
 	}
 }
 
@@ -124,6 +127,11 @@ func (e *Engine) AuditLogService() interfaces.AuditLogService {
 // EndpointManagerService 暴露端点管理服务（D3）
 func (e *Engine) EndpointManagerService() interfaces.EndpointManagerService {
 	return e.endpointMgr
+}
+
+// TemplateService 暴露模板服务（D5）
+func (e *Engine) TemplateService() interfaces.TemplateService {
+	return e.templateSvc
 }
 
 // Start 启动引擎：监听 gRPC 端口 + 恢复未完成实例 + 启动健康检查
