@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/zhiyunliu/distributed-workflow/endpoint/schedule"
 	types "github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/endpoint/schedule"
 )
 
 // registerD4WorkflowRoutes 注册 D4 工作流设计器扩展路由

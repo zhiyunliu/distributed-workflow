@@ -1,0 +1,404 @@
+plan_id: restructure
+objective: 分析项目重构后旧目录与新目录的关系，确定哪些旧目录可安全删除
+focus_area: project-restructure
+created_at: "2026-04-29"
+created_by: RESEARCHER
+status: completed
+
+tldr: |
+  - 项目已完成从扁平结构到两个子模块的迁移：runtime-execution/ 和 config-management/
+  - 所有旧目录的代码均已迁移到新目录，主要差异是包名和 import 路径已更新
+  - 新目录下仍有 3 处文件遗留了对旧包路径的 import（编译依赖旧目录）
+  - 只有一个根级 go.mod，所有包同属 github.com/zhiyunliu/distributed-workflow 模块
+  - proto/workflow.proto 源文件未迁移到新目录（仅迁移了生成的 .pb.go 文件）
+  - web/src/ 和 config-management/frontend/src/ 文件名完全相同（前端已完整迁移）
+
+research_metadata:
+  methodology: "file enumeration + grep_search + PowerShell content diff"
+  scope: "所有旧目录（17个）与新目录（runtime-execution/, config-management/）的完整对比"
+  confidence: high
+  coverage: 100
+  decision_blockers: 1
+  research_blockers: 0
+
+# ============================================================
+# 旧目录文件清单
+# ============================================================
+old_directories:
+  dag:
+    files:
+      - dag/dag.go
+      - dag/dag_test.go
+      - dag/doc.go
+    migrated_to: runtime-execution/internal/common/dag/
+    migration_status: "已迁移（import路径已更新至新路径，内容有差异）"
+
+  endpoint:
+    files:
+      - endpoint/http/doc.go
+      - endpoint/http/middleware_ratelimit.go
+      - endpoint/http/server_d3.go
+      - endpoint/http/server_d4_workflow.go
+      - endpoint/http/server_d4.go
+      - endpoint/http/server_d5_template.go
+      - endpoint/http/server_d6_approval.go
+      - endpoint/http/server_d6_form.go
+      - endpoint/http/server_d6_oauth.go
+      - endpoint/http/server_d6_plugin.go
+      - endpoint/http/server_d6_stats.go
+      - endpoint/http/server.go
+      - endpoint/schedule/cron.go
+    migrated_to:
+      - "endpoint/http/server_d3.go, server.go, doc.go, middleware → runtime-execution/pkg/endpoint/http/"
+      - "endpoint/http/server_d4*.go, server_d5*.go, server_d6*.go → config-management/backend/internal/handler/"
+      - "endpoint/schedule/cron.go → runtime-execution/pkg/endpoint/schedule/cron.go"
+    migration_status: "已完整拆分迁移"
+
+  engine:
+    files:
+      - engine/advanced_approval_service.go
+      - engine/analytics_service.go
+      - engine/approval_service.go
+      - engine/audit_log_manager.go
+      - engine/callback_manager.go
+      - engine/context_manager.go
+      - engine/doc.go
+      - engine/endpoint_manager.go
+      - engine/engine.go
+      - engine/error_handler.go
+      - engine/failover_manager.go
+      - engine/form_service.go
+      - engine/instance_state.go
+      - engine/lifecycle_manager.go
+      - engine/oauth_service.go
+      - engine/plugin_service.go
+      - engine/schedule_manager.go
+      - engine/scheduler.go
+      - engine/server.go
+      - engine/subflow_manager.go
+      - engine/template_service.go
+      - engine/version_manager.go
+      - engine/worker_manager_test.go
+      - engine/worker_manager.go
+      - engine/workflow_service.go
+    migrated_to: runtime-execution/internal/engine/
+    migration_status: "已迁移（import路径已更新，旧版使用 interfaces/plugin/rpc，新版使用新路径）"
+
+  interfaces:
+    files:
+      - interfaces/analytics_service.go
+      - interfaces/approval_service_d6.go
+      - interfaces/components.go
+      - interfaces/doc.go
+      - interfaces/form_repository.go
+      - interfaces/form_service.go
+      - interfaces/oauth_service.go
+      - interfaces/plugin_service.go
+      - interfaces/repository.go
+      - interfaces/services.go
+    migrated_to: runtime-execution/pkg/api/
+    migration_status: "已迁移（import路径已更新，旧版引用 types/，新版引用 runtime-execution/internal/common/types/）"
+
+  jwtutil:
+    files:
+      - jwtutil/jwt.go
+    migrated_to: runtime-execution/internal/common/jwtutil/jwt.go
+    migration_status: "已迁移（内容完全相同 IDENTICAL）"
+
+  plugin:
+    files:
+      - plugin/doc.go
+      - plugin/registry.go
+      - plugin/sdk.go
+    migrated_to: runtime-execution/internal/common/plugin/
+    migration_status: "已迁移"
+
+  proto:
+    files:
+      - proto/workflow.proto        # 源文件，未迁移到新目录
+      - proto/workflow_d2.go
+      - proto/workflow.pb.go        # 生成文件，IDENTICAL
+      - proto/workflow_grpc.pb.go   # 生成文件，IDENTICAL
+    migrated_to: runtime-execution/internal/proto/
+    migration_status: "已迁移（.pb.go生成文件 IDENTICAL，但 workflow.proto 源文件未迁移到新目录）"
+    warning: "workflow.proto 源文件只在旧 proto/ 目录存在，如删除将丢失源文件"
+
+  registry:
+    files:
+      - registry/nacos/doc.go
+      - registry/nacos/registry.go
+    migrated_to: runtime-execution/internal/common/registry/nacos/
+    migration_status: "已迁移"
+
+  rpc:
+    files:
+      - rpc/doc.go
+      - rpc/engine_client.go
+      - rpc/worker_client.go
+    migrated_to: runtime-execution/internal/common/rpc/
+    migration_status: "已迁移"
+
+  storage:
+    files:
+      - storage/redis/client.go       # IDENTICAL
+      - storage/redis/doc.go
+      - storage/redis/lock.go
+      - storage/redis/queue.go
+      - storage/sqlserver/analytics_repository.go
+      - storage/sqlserver/approval_repository_d6.go
+      - storage/sqlserver/doc.go
+      - storage/sqlserver/form_repository.go
+      - storage/sqlserver/oauth_repository.go
+      - storage/sqlserver/plugin_repository.go
+      - storage/sqlserver/repository.go
+      - storage/sqlserver/schema_d2.sql
+      - storage/sqlserver/schema_d3.sql
+      - storage/sqlserver/schema_d4.sql
+      - storage/sqlserver/schema_d5.sql
+      - storage/sqlserver/schema_d6.sql
+      - storage/sqlserver/schema.sql
+      - storage/sqlserver/template_repository.go
+    migrated_to: runtime-execution/internal/storage/
+    migration_status: "已迁移（redis/client.go IDENTICAL；SQL schema 文件已迁移）"
+
+  sysbuiltin:
+    files:
+      - sysbuiltin/auth_service.go
+      - sysbuiltin/dict_service.go
+      - sysbuiltin/manager.go
+      - sysbuiltin/menu_service.go
+      - sysbuiltin/permission_service.go
+      - sysbuiltin/role_service.go
+      - sysbuiltin/security_policy.go
+      - sysbuiltin/user_service.go
+    migrated_to: config-management/backend/internal/service/
+    migration_status: "已迁移"
+
+  sysmanager:
+    files:
+      - sysmanager/interfaces.go
+    migrated_to: config-management/backend/internal/sysmanager/interfaces.go
+    migration_status: "已迁移"
+
+  sysmodel:
+    files:
+      - sysmodel/types.go
+    migrated_to: config-management/backend/internal/sysmodel/types.go
+    migration_status: "已迁移（内容完全相同 IDENTICAL）"
+
+  sysrepo:
+    files:
+      - sysrepo/interfaces.go
+    migrated_to: config-management/backend/internal/sysrepo/interfaces.go
+    migration_status: "已迁移"
+
+  syssqlserver:
+    files:
+      - syssqlserver/repository.go
+    migrated_to: config-management/backend/internal/dao/repository.go
+    migration_status: "已迁移（包名由 syssqlserver 重命名为 dao，内容有差异）"
+
+  types:
+    files:
+      - types/analytics_types.go
+      - types/approval_types_d6.go
+      - types/doc.go
+      - types/form_types.go
+      - types/oauth_types.go
+      - types/plugin_types.go
+      - types/types.go
+    migrated_to: runtime-execution/internal/common/types/
+    migration_status: "已迁移（types.go 内容完全相同 IDENTICAL）"
+
+  web:
+    files:
+      - web/Dockerfile
+      - web/index.html
+      - web/nginx.conf
+      - web/package.json
+      - web/tsconfig.json
+      - web/tsconfig.node.json
+      - web/vite.config.ts
+      - web/src/  # 与 config-management/frontend/src/ 文件名完全相同（ALL SAME FILENAMES）
+      - web/node_modules/  # 已安装的 npm 包，体积较大
+    migrated_to: config-management/frontend/
+    migration_status: "已迁移（web/src/ 与 config-management/frontend/src/ 文件名完全一致）"
+
+  worker:
+    files:
+      - worker/doc.go
+      - worker/executor_container_test.go
+      - worker/executor_container.go
+      - worker/server.go
+      - worker/task_manager.go
+      - worker/worker.go
+      - worker/executors/builtin.go
+      - worker/executors/executors_test.go
+      - worker/executors/http.go
+      - worker/executors/human_task.go
+    migrated_to:
+      - "worker/*.go → runtime-execution/internal/worker/"
+      - "worker/executors/ → runtime-execution/pkg/node/"
+    migration_status: "已迁移（import路径已更新，旧版使用 interfaces/rpc，新版使用新路径）"
+
+# ============================================================
+# 新目录结构
+# ============================================================
+new_directories:
+  runtime_execution:
+    path: runtime-execution/
+    structure:
+      - cmd/engine/main.go          # 引擎服务入口
+      - cmd/worker/main.go          # Worker服务入口
+      - internal/common/dag/        # 来自 dag/
+      - internal/common/jwtutil/    # 来自 jwtutil/
+      - internal/common/plugin/     # 来自 plugin/
+      - internal/common/registry/   # 来自 registry/
+      - internal/common/rpc/        # 来自 rpc/
+      - internal/common/types/      # 来自 types/
+      - internal/engine/            # 来自 engine/
+      - internal/proto/             # 来自 proto/ (仅.pb.go文件)
+      - internal/storage/redis/     # 来自 storage/redis/
+      - internal/storage/sqlserver/ # 来自 storage/sqlserver/
+      - internal/worker/            # 来自 worker/
+      - pkg/api/                    # 来自 interfaces/
+      - pkg/endpoint/http/          # 来自 endpoint/http/ (仅d3及通用部分)
+      - pkg/endpoint/schedule/      # 来自 endpoint/schedule/
+      - pkg/node/                   # 来自 worker/executors/
+    go_mod: "无独立go.mod，使用根级 go.mod"
+
+  config_management:
+    path: config-management/
+    structure:
+      - backend/cmd/api/main.go                    # 配置管理API入口
+      - backend/internal/dao/repository.go         # 来自 syssqlserver/
+      - backend/internal/handler/server*.go        # 来自 endpoint/http/server_d4-d6*.go
+      - backend/internal/service/                  # 来自 sysbuiltin/
+      - backend/internal/sysmanager/               # 来自 sysmanager/
+      - backend/internal/sysmodel/                 # 来自 sysmodel/
+      - backend/internal/sysrepo/                  # 来自 sysrepo/
+      - frontend/                                  # 来自 web/（文件名完全相同）
+    go_mod: "无独立go.mod，使用根级 go.mod"
+
+# ============================================================
+# 关键发现：旧包路径的遗留引用
+# ============================================================
+stale_imports_in_new_code:
+  - file: runtime-execution/internal/engine/schedule_manager.go
+    line: 9
+    stale_import: '"github.com/zhiyunliu/distributed-workflow/endpoint/schedule"'
+    correct_import: '"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/endpoint/schedule"'
+    severity: COMPILE_BLOCKER  # 若删除旧 endpoint/ 目录将导致编译失败
+
+  - file: config-management/backend/internal/handler/server_d4_workflow.go
+    line: 10
+    stale_import: '"github.com/zhiyunliu/distributed-workflow/endpoint/schedule"'
+    correct_import: '"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/endpoint/schedule"'
+    severity: COMPILE_BLOCKER
+
+  - file: config-management/backend/internal/handler/server_d4.go
+    line: 11
+    stale_import: '"github.com/zhiyunliu/distributed-workflow/sysmodel"'
+    correct_import: '"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/sysmodel"'
+    severity: COMPILE_BLOCKER
+
+# ============================================================
+# go.mod 分析
+# ============================================================
+go_mod_analysis:
+  root_go_mod: go.mod
+  module_name: "github.com/zhiyunliu/distributed-workflow"
+  go_version: "1.25.7"
+  sub_module_go_mods: []  # 无独立子模块go.mod
+  conclusion: |
+    整个项目共享根级唯一 go.mod，runtime-execution/ 和 config-management/ 
+    均不是独立 Go 模块。所有包路径均以 github.com/zhiyunliu/distributed-workflow 开头。
+
+# ============================================================
+# 根目录依赖分析
+# ============================================================
+root_level_analysis:
+  go_files_at_root: []   # 根目录无 .go 文件
+  examples_imports_old: false  # examples/ 已全部使用新路径
+  examples_imports_new: true
+  makefile_exists: true
+  dockerfile_exists: true
+  docker_compose_exists: true
+
+# ============================================================
+# 删除安全性结论
+# ============================================================
+deletion_safety:
+  safe_to_delete_after_fixing_imports:
+    - dag/          # 已迁移到 runtime-execution/internal/common/dag/
+    - endpoint/     # 已拆分迁移，但 3 个文件有 stale import 需先修复
+    - engine/       # 已迁移到 runtime-execution/internal/engine/
+    - interfaces/   # 已迁移到 runtime-execution/pkg/api/
+    - jwtutil/      # 已迁移（IDENTICAL）
+    - plugin/       # 已迁移
+    - registry/     # 已迁移
+    - rpc/          # 已迁移
+    - storage/      # 已迁移（redis IDENTICAL）
+    - sysbuiltin/   # 已迁移到 config-management/backend/internal/service/
+    - sysmanager/   # 已迁移
+    - sysmodel/     # 已迁移（IDENTICAL），但 server_d4.go 仍引用旧路径需先修复
+    - sysrepo/      # 已迁移
+    - syssqlserver/ # 已迁移（包名改为 dao）
+    - types/        # 已迁移（types.go IDENTICAL）
+    - web/          # 已迁移（文件名完全相同），web/node_modules 体积大可优先删除
+    - worker/       # 已迁移到 runtime-execution/internal/worker/ 和 pkg/node/
+
+  requires_action_before_delete:
+    - directory: endpoint/
+      action: |
+        修复以下 stale imports 再删除：
+        1. runtime-execution/internal/engine/schedule_manager.go:9
+           将 "github.com/zhiyunliu/distributed-workflow/endpoint/schedule"
+           改为 "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/endpoint/schedule"
+        2. config-management/backend/internal/handler/server_d4_workflow.go:10
+           同上修复
+
+    - directory: sysmodel/
+      action: |
+        修复以下 stale import 再删除：
+        3. config-management/backend/internal/handler/server_d4.go:11
+           将 "github.com/zhiyunliu/distributed-workflow/sysmodel"
+           改为 "github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/sysmodel"
+
+  special_attention:
+    - directory: proto/
+      note: |
+        proto/workflow.proto 源文件未迁移到新目录（新目录只有生成的 .pb.go 文件）。
+        删除 proto/ 前需先将 workflow.proto 复制到合适位置（如 runtime-execution/internal/proto/workflow.proto）。
+
+    - directory: web/
+      note: |
+        web/node_modules/ 目录体积很大（已安装 npm 依赖），是本地开发产物，可安全删除。
+        web/src/ 与 config-management/frontend/src/ 文件名完全相同，内容应已同步。
+
+open_questions:
+  - question: "endpoint/ 旧目录中 server_d4_workflow.go 等文件迁移到了 config-management/，但 endpoint/http/ 的 server_d4.go 是否应该也有对应的新版本？"
+    context: "旧 endpoint/http/ 有 server_d4.go（无 _workflow），新结构在 config-management/backend/internal/handler/ 中也有 server_d4.go"
+    type: nice_to_know
+    affects: ["endpoint/"]
+
+  - question: "proto/workflow.proto 源文件是否需要迁移到新目录结构，还是统一放在项目根级别或 docs/？"
+    context: "runtime-execution/internal/proto/ 只有 .pb.go 生成文件，没有 .proto 源文件"
+    type: decision_blocker
+    affects: ["proto/"]
+
+  - question: "web/ 与 config-management/frontend/ 的文件名相同，但内容是否完全一致？"
+    context: "文件名对比为 ALL SAME FILENAMES，但未进行内容级别的逐一比对"
+    type: nice_to_know
+    affects: ["web/"]
+
+gaps:
+  - area: "proto 源文件迁移"
+    description: "proto/workflow.proto 未复制到新目录，新目录只有生成的 .pb.go"
+    impact: decision_blocker
+    affects: ["proto/"]
+
+  - area: "stale import 修复"
+    description: "3个新文件仍引用旧包路径，在删除旧目录前必须修复"
+    impact: decision_blocker
+    affects: ["endpoint/", "sysmodel/"]

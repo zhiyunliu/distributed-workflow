@@ -7,8 +7,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/sysmanager"
+	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/sysmodel"
 	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/jwtutil"
-	"github.com/zhiyunliu/distributed-workflow/sysmodel"
 )
 
 // ─── 注入与路由注册 ──────────────────────────────────────────────────────────
