@@ -3,7 +3,7 @@ package dag
 import (
 	"fmt"
 
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // DAGGraph 表示工作流的有向无环图，包含邻接表与反向邻接表
@@ -241,3 +241,5 @@ func isConnectionSatisfied(connType types.ConnectionType, srcStatus types.Workfl
 		return srcStatus == types.WorkflowNodeStatusCompleted
 	}
 }
+
+

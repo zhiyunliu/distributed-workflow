@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // CreateWorkflowTemplate 创建流程模板
@@ -421,3 +421,5 @@ func fillWorkflowTemplate(
 	item.VisibleScope = types.WorkflowTemplateVisibleScope(visibleScope)
 	item.VisibleRange = unmarshalVisibleRange(visibleRange)
 }
+
+

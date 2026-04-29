@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // testCtx 构造测试用 WorkflowContext
@@ -252,3 +252,5 @@ func TestHTTPExecutor_Execute_WithHeaders(t *testing.T) {
 		t.Errorf("expected header X-Test='hello', got %q", gotHeader)
 	}
 }
+
+

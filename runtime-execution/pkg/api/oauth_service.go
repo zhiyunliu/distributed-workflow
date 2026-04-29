@@ -3,7 +3,7 @@ package api
 import (
 	"context"
 
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // OAuthService 第三方平台OAuth服务接口
@@ -31,3 +31,5 @@ type OAuthRepository interface {
 	GetBindingBySysUser(ctx context.Context, sysUserID string) ([]*types.OAuthBinding, error)
 	UpdateBinding(ctx context.Context, binding *types.OAuthBinding) error
 }
+
+

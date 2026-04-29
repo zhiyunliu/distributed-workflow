@@ -270,3 +270,4 @@ func (e *Engine) Stop() {
 
 // suppress unused import warning
 var _ zerolog.Logger
+

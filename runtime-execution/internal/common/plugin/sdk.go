@@ -3,7 +3,7 @@ package plugin
 import (
 	"context"
 
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // Plugin 插件基础接口
@@ -64,3 +64,5 @@ func (b *BasePlugin) Version() string        { return b.version }
 func (b *BasePlugin) Type() types.PluginType { return b.ptype }
 func (b *BasePlugin) Init(_ string) error    { return nil }
 func (b *BasePlugin) Destroy() error         { return nil }
+
+

@@ -3,7 +3,7 @@ package worker
 import (
 	"testing"
 
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 	api "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api"
 )
 
@@ -73,3 +73,5 @@ func TestExecutorContainer_ImplementsInterface(t *testing.T) {
 	c := NewExecutorContainer()
 	var _ api.NodeExecutorContainer = c
 }
+
+

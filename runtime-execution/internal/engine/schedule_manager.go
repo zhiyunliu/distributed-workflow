@@ -1,4 +1,4 @@
-﻿package engine
+package engine
 
 import (
 	"sync"
@@ -6,7 +6,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 	api "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api"
 	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/endpoint/schedule"
 )
@@ -167,3 +167,5 @@ func (m *scheduleManagerImpl) triggerEndpoint(ep *types.WorkflowEndpoint) {
 		Str("instanceID", instanceID).
 		Msg("schedule endpoint triggered workflow")
 }
+
+

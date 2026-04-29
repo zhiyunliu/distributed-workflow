@@ -7,7 +7,7 @@ import (
 	"fmt"
 
 	api "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // 编译时接口断言
@@ -272,3 +272,5 @@ WHERE workflow_instance_id = @instanceID AND node_id = @nodeID`
 	}
 	return records, nil
 }
+
+

@@ -1,4 +1,4 @@
-﻿package engine
+package engine
 
 import (
 	"fmt"
@@ -8,7 +8,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	api "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // endpointManagerImpl 端点管理服务实现
@@ -208,3 +208,5 @@ func (m *endpointManagerImpl) StopScheduleManager() error {
 	m.schedMgr.stop()
 	return nil
 }
+
+

@@ -3,7 +3,7 @@ package api
 import (
 	"context"
 
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // FormRepository 表单数据仓库接口
@@ -40,3 +40,5 @@ type FormRepository interface {
 	// GetFormInstanceByWorkflow 按流程实例查询表单实例
 	GetFormInstanceByWorkflow(ctx context.Context, workflowInstanceID, nodeID string) (*types.FormInstance, error)
 }
+
+

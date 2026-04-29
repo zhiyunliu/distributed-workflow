@@ -1,4 +1,4 @@
-﻿package engine
+package engine
 
 import (
 	"fmt"
@@ -6,7 +6,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 	api "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // InstanceStateServiceImpl 实现 api.InstanceStateService
@@ -193,3 +193,5 @@ func (s *InstanceStateServiceImpl) AddApprovalRecord(record *types.ApprovalRecor
 func (s *InstanceStateServiceImpl) GetApprovalRecords(instanceID, nodeID string) ([]*types.ApprovalRecord, error) {
 	return s.repo.GetApprovalRecords(instanceID, nodeID)
 }
+
+

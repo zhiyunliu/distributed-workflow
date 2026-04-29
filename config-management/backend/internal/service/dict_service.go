@@ -58,3 +58,4 @@ func (s *dictService) UpdateDictData(ctx context.Context, item *sysmodel.Diction
 func (s *dictService) DeleteDictData(ctx context.Context, dicID int64) error {
 	return s.dictRepo.Delete(ctx, dicID)
 }
+

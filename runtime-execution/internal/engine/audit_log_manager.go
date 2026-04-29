@@ -1,4 +1,4 @@
-﻿package engine
+package engine
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	api "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // auditLogManagerImpl 审计日志管理器，使用带缓冲 channel 异步批量写入
@@ -284,3 +284,5 @@ func WithDetailf(format string, args ...interface{}) func(*types.WorkflowAuditLo
 func WithAfterData(data map[string]interface{}) func(*types.WorkflowAuditLog) {
 	return func(l *types.WorkflowAuditLog) { l.AfterData = data }
 }
+
+

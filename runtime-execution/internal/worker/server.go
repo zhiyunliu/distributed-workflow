@@ -7,7 +7,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc"
 
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/proto"
 	api "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api"
 )
@@ -93,3 +93,5 @@ func (s *WorkerServer) HealthCheck(_ context.Context, req *proto.HealthCheckRequ
 	log.Debug().Str("worker_id", req.WorkerId).Msg("health check received")
 	return &proto.HealthCheckResponse{Code: 0, Message: "ok", Success: true}, nil
 }
+
+

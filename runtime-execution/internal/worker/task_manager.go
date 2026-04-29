@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 	api "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api"
 	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/node"
 )
@@ -209,3 +209,5 @@ func (m *TaskManager) decrLoad(nodeType string) {
 	}
 	m.loadMu.Unlock()
 }
+
+

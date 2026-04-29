@@ -3,7 +3,7 @@ package api
 import (
 	"context"
 
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // PluginService 插件管理服务接口
@@ -37,3 +37,5 @@ type PluginRepository interface {
 	DeletePluginConfig(ctx context.Context, pluginID string) error
 	ListInstalledPlugins(ctx context.Context) ([]*types.PluginConfig, error)
 }
+
+

@@ -143,3 +143,4 @@ var DefaultAuthConfig = AuthConfig{
 	Secret:      "", // 请通过配置文件或 JWT_SECRET 环境变量设置
 	ExpireHours: 24,
 }
+

@@ -1,4 +1,4 @@
-﻿package engine
+package engine
 
 import (
 	"encoding/json"
@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	api "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 type templateServiceImpl struct {
@@ -231,3 +231,5 @@ func cloneWorkflowDef(def *types.WorkflowDef) (*types.WorkflowDef, error) {
 	}
 	return &copied, nil
 }
+
+

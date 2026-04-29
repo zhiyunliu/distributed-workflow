@@ -63,3 +63,4 @@ func (s *roleService) GetRoleMenus(ctx context.Context, roleID int64) ([]int64, 
 func (s *roleService) AssignRoleMenus(ctx context.Context, roleID int64, menuIDs []int64) error {
 	return s.roleRepo.AssignMenus(ctx, roleID, menuIDs)
 }
+

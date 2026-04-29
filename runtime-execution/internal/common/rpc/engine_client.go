@@ -11,7 +11,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/proto"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 const (
@@ -186,3 +186,5 @@ func (c *EngineClient) ReportError(workerID, workerIP, instanceID, nodeID, errMs
 	}
 	return nil
 }
+
+

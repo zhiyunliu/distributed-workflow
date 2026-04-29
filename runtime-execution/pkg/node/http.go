@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // HTTPExecutor HTTP 请求执行器
@@ -95,3 +95,5 @@ func (e *HTTPExecutor) Execute(config map[string]interface{}, input map[string]i
 		"response_body": string(respBody),
 	}, nil
 }
+
+

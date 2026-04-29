@@ -31,3 +31,4 @@ type HealthCheckRequest = UnregisterWorkerRequest
 //   Message → Message (field 2)
 //   Success → Healthy (field 3, bool) — Success=true 代表 healthy
 type HealthCheckResponse = HeartbeatResponse
+

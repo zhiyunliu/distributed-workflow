@@ -3,7 +3,7 @@ package api
 import (
 	"time"
 
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // NodeExecutor 节点执行器接口，所有自定义节点必须实现该接口
@@ -96,3 +96,5 @@ type ErrorHandler interface {
 	// ListDeadLetterTasks 列举实例的死信任务
 	ListDeadLetterTasks(instanceID string) ([]*types.DeadLetterTask, error)
 }
+
+

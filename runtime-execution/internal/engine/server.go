@@ -1,4 +1,4 @@
-﻿package engine
+package engine
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 
 	api "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api"
 	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/proto"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // EngineServer 实现 proto.EngineServiceServer，接收 Worker 的 gRPC 调用
@@ -117,3 +117,5 @@ func (s *EngineServer) ReportError(_ context.Context, req *proto.ReportErrorRequ
 		Msg("worker reported error")
 	return &proto.ReportErrorResponse{Code: 0, Message: "ok", Success: true}, nil
 }
+
+

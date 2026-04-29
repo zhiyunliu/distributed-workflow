@@ -110,3 +110,4 @@ func (s *userService) ResetPassword(ctx context.Context, userID int64, newPasswo
 func (s *userService) AssignRoles(ctx context.Context, userID int64, roleIDs []int64) error {
 	return s.roleRepo.AssignUserRoles(ctx, userID, roleIDs)
 }
+

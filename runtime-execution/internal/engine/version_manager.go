@@ -1,4 +1,4 @@
-﻿package engine
+package engine
 
 import (
 	"fmt"
@@ -7,7 +7,7 @@ import (
 	"time"
 
 	api "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // versionManagerImpl WorkflowVersionManager 实现
@@ -167,3 +167,5 @@ func calcRetryInterval(policy *types.RetryPolicy, retryCount int) int {
 		return 30
 	}
 }
+
+

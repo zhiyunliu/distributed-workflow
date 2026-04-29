@@ -79,3 +79,4 @@ func buildTree(list []*sysmodel.SystemMenu, parentID int64) []*sysmodel.SystemMe
 	}
 	return children
 }
+

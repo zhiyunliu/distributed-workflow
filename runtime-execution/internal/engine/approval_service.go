@@ -1,4 +1,4 @@
-﻿package engine
+package engine
 
 import (
 	"fmt"
@@ -8,7 +8,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	api "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // approvalServiceImpl 人工审批服务实现
@@ -307,3 +307,5 @@ func countRejectApprovals(records []*types.ApprovalRecord, cfg *types.HumanTaskC
 	}
 	return len(rejected)
 }
+
+

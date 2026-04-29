@@ -5,7 +5,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	types "github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	types "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 	api "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api"
 )
 
@@ -195,3 +195,5 @@ func (s *Server) markCCRead(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "标记已读成功"})
 }
+
+

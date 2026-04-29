@@ -514,3 +514,4 @@ var NodeWorkerService_ServiceDesc = grpc.ServiceDesc{
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "proto/workflow.proto",
 }
+

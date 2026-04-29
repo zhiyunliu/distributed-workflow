@@ -13,7 +13,7 @@ import (
 	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/sysmanager"
 	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/sysmodel"
 	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/sysrepo"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/jwtutil"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/jwtutil"
 )
 
 // ─── AuthService 内置实现 ─────────────────────────────────────────────────────
@@ -220,3 +220,4 @@ func getUserPerms(ctx context.Context, userID int64, roles []*sysmodel.SystemRol
 	}
 	return perms, nil
 }
+

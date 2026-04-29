@@ -1,11 +1,11 @@
-﻿package engine
+package engine
 
 import (
 	"fmt"
 	"time"
 
 	api "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // validTransitions 合法的状态转换表
@@ -184,3 +184,5 @@ func (l *lifecycleManagerImpl) RetryNode(instanceID string, nodeID string, opera
 	}
 	return nil
 }
+
+

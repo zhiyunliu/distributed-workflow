@@ -54,3 +54,4 @@ func (r *PluginRegistry) List() []string {
 	}
 	return ids
 }
+

@@ -188,3 +188,4 @@ func (c *Client) DeleteCache(key string) error {
 	}
 	return nil
 }
+

@@ -5,7 +5,7 @@ import (
 	"database/sql"
 
 	api "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // 编译时接口断言
@@ -164,3 +164,5 @@ WHERE platform = @p4 AND open_id = @p5`
 	)
 	return wrapDBErr(err, "UpdateBinding")
 }
+
+

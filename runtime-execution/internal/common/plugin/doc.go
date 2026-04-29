@@ -20,3 +20,4 @@
 //	    return map[string]interface{}{"result": "ok"}, nil
 //	}
 package plugin
+

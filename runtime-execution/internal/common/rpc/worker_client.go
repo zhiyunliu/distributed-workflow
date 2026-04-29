@@ -12,7 +12,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/proto"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // WorkerClient NodeWorker gRPC 客户端，供 Engine 调用 NodeWorker 服务
@@ -215,3 +215,5 @@ func (wc *WorkerClient) HealthCheck(address, workerID string) bool {
 	}
 	return resp.Success
 }
+
+

@@ -3,7 +3,7 @@ package dag
 import (
 	"testing"
 
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // buildDef 构建工作流定义辅助函数
@@ -256,3 +256,5 @@ func TestParse_MissingStartNode(t *testing.T) {
 		t.Error("expected error for missing start node")
 	}
 }
+
+

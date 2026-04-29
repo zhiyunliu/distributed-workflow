@@ -3,7 +3,7 @@ package node
 import (
 	"errors"
 
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // ErrNodeWaiting 是一个哨兵错误，用于标识节点进入人工审批等待状态。
@@ -29,3 +29,5 @@ func (e *HumanTaskExecutor) Type() string { return "human_task" }
 func (e *HumanTaskExecutor) Execute(config map[string]interface{}, input map[string]interface{}, ctx *types.WorkflowContext) (map[string]interface{}, error) {
 	return nil, ErrNodeWaiting
 }
+
+

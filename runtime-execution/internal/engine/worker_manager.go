@@ -1,4 +1,4 @@
-﻿package engine
+package engine
 
 import (
 	"fmt"
@@ -7,7 +7,7 @@ import (
 	"github.com/rs/zerolog/log"
 	api "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api"
 	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/rpc"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // WorkerManagerServiceImpl 实现 api.WorkerManagerService
@@ -239,3 +239,5 @@ func (m *WorkerManagerServiceImpl) CleanupOrphanTasks() error {
 	log.Info().Int("offline_count", len(offlineWorkers)).Msg("cleanup orphan tasks: offline workers found")
 	return nil
 }
+
+

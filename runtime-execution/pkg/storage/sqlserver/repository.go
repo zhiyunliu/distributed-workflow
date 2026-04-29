@@ -10,7 +10,7 @@ import (
 	_ "github.com/microsoft/go-mssqldb"
 	"github.com/rs/zerolog/log"
 
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 const (
@@ -1877,3 +1877,5 @@ func scanEndpointRow(rows *sql.Rows) (*types.WorkflowEndpoint, error) {
 	}
 	return &ep, nil
 }
+
+

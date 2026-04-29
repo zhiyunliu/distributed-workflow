@@ -15,8 +15,8 @@ import (
 
 	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/engine"
 	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/storage/redis"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/storage/sqlserver"
 	httpendpoint "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/endpoint/http"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/storage/sqlserver"
 )
 
 func main() {
@@ -42,14 +42,14 @@ func main() {
 	// 创建引擎（D6 可选仓储传 nil，待后续注入）
 	eng := engine.New(
 		engine.Config{GRPCAddr: grpcAddr},
-		repo,        // api.WorkflowRepository
-		redisClient, // api.RedisRepository
-		redisClient, // *redis.Client（快照 + failover）
-		nil,         // formRepo
-		nil,         // advApprovalRepo
-		nil,         // analyticsRepo
-		nil,         // pluginRepo
-		nil,         // oauthRepo
+		repo,                    // api.WorkflowRepository
+		redisClient,             // api.RedisRepository
+		redisClient.RawClient(), // *redis.Client（快照 + failover）
+		nil,                     // formRepo
+		nil,                     // advApprovalRepo
+		nil,                     // analyticsRepo
+		nil,                     // pluginRepo
+		nil,                     // oauthRepo
 	)
 	if err := eng.Start(); err != nil {
 		log.Fatalf("start engine: %v", err)

@@ -118,3 +118,4 @@ func (l *DistributedLock) watchdog() {
 func LockKeyFormat(instanceID, nodeID string) string {
 	return fmt.Sprintf("workflow:lock:instance:%s:node:%s", instanceID, nodeID)
 }
+

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	types "github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	types "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/endpoint/schedule"
 )
 
@@ -350,3 +350,5 @@ func (s *Server) validateCronExpr(c *gin.Context) {
 		"nextTimes": nextTimes,
 	}})
 }
+
+

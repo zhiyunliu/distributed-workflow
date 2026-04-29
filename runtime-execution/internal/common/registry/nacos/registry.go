@@ -12,7 +12,7 @@ import (
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
 	"github.com/rs/zerolog/log"
 
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 const (
@@ -228,3 +228,5 @@ func parseAddr(addr string) (string, uint64, error) {
 	}
 	return host, port, nil
 }
+
+

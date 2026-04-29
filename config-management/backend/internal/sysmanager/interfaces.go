@@ -126,3 +126,4 @@ type Manager interface {
 	Permission() PermissionService
 	Dictionary() DictionaryService
 }
+

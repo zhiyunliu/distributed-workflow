@@ -1,9 +1,10 @@
 package api
 
 import (
+	"context"
 	"time"
 
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // WorkflowService 工作流定义管理服务接口
@@ -47,6 +48,61 @@ type WorkflowService interface {
 	ListWorkflowInstances(workflowID string, status types.WorkflowStatus, pageSize, pageNum int) ([]*types.WorkflowInstance, error)
 	// ListDeadLetterTasks 查询实例的死信任务列表
 	ListDeadLetterTasks(instanceID string) ([]*types.DeadLetterTask, error)
+}
+
+// WorkflowVersionManager 工作流版本管理接口（D2新增）
+type WorkflowVersionManager interface {
+	// CreateVersion 创建新版本
+	CreateVersion(workflowID string, def *types.WorkflowDef, changeLog string, createdBy string) (*types.WorkflowVersion, error)
+	// GetVersion 获取指定版本
+	GetVersion(workflowID string, version int) (*types.WorkflowVersion, error)
+	// GetCurrentVersion 获取当前版本
+	GetCurrentVersion(workflowID string) (*types.WorkflowVersion, error)
+	// ListVersions 列举所有版本
+	ListVersions(workflowID string) ([]*types.WorkflowVersion, error)
+	// SetCurrentVersion 设为当前生效版本
+	SetCurrentVersion(workflowID string, version int) error
+	// SelectVersionForInstance 为实例选择版本（灰度）
+	SelectVersionForInstance(workflowID string, tenantID string) (int, error)
+}
+
+// LifecycleManager 实例生命周期管理接口（D2新增）
+type LifecycleManager interface {
+	Pause(instanceID string, operator string) error
+	Resume(instanceID string, operator string) error
+	Cancel(instanceID string, operator string) error
+	Retry(instanceID string, operator string) error
+	RetryNode(instanceID string, nodeID string, operator string) error
+}
+
+// FailoverManager Worker 故障切换管理接口（D2新增）
+type FailoverManager interface {
+	StartHealthCheckLoop()
+	StopHealthCheckLoop()
+	HealthCheckWorker(workerID string) (bool, error)
+	FailoverWorker(workerID string) error
+}
+
+// SubflowManager 子流程管理接口（D2新增）
+type SubflowManager interface {
+	// TriggerSubflow 触发子流程
+	TriggerSubflow(parentInstanceID, parentNodeID string, subflowID string, inputData map[string]interface{}, mode types.SubflowCallMode) (string, error)
+	// OnSubflowComplete 子流程完成回调
+	OnSubflowComplete(subflowInstanceID string, success bool, outputData map[string]interface{}) error
+	// GetSubflowDepth 获取子流程深度
+	GetSubflowDepth(instanceID string) (int, error)
+}
+
+// AuditLogManager 审计日志管理接口（D3新增）
+type AuditLogManager interface {
+	Start()
+	Stop()
+	RecordLog(auditLog *types.WorkflowAuditLog) error
+	BatchRecordLog(logs []*types.WorkflowAuditLog) error
+	QueryLogs(filter types.AuditLogFilter, page, pageSize int) ([]*types.WorkflowAuditLog, int64, error)
+	GetLogByID(logID string) (*types.WorkflowAuditLog, error)
+	ArchiveLogs(beforeTime time.Time) error
+	VerifyLogChain(ctx context.Context, startTime, endTime time.Time) (bool, error)
 }
 
 // SchedulerService 调度服务接口

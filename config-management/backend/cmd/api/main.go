@@ -19,7 +19,7 @@ import (
 	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/handler"
 	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/service"
 	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/sysmodel"
-	wfstore "github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/storage/sqlserver"
+	wfstore "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/storage/sqlserver"
 )
 
 func main() {
@@ -89,3 +89,4 @@ func envOr(key, def string) string {
 	}
 	return def
 }
+

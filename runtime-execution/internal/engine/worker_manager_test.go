@@ -1,10 +1,10 @@
-﻿package engine
+package engine
 
 import (
 	"testing"
 	"time"
 
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 func makeWorker(id, nodeType string, maxCap, curLoad int) *types.NodeWorkerInfo {
@@ -143,3 +143,5 @@ func TestWorkerManager_HandleWorkerOffline(t *testing.T) {
 		t.Errorf("expected 0 online workers after offline, got %d", len(list))
 	}
 }
+
+

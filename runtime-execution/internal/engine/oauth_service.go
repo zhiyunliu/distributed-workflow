@@ -1,4 +1,4 @@
-﻿package engine
+package engine
 
 import (
 	"bytes"
@@ -12,7 +12,7 @@ import (
 	"time"
 
 	api "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // 编译时接口断言
@@ -321,3 +321,5 @@ func (s *oauthService) GetBindingByOpenID(ctx context.Context, platform, openID 
 func (s *oauthService) GetBindingBySysUser(ctx context.Context, sysUserID string) ([]*types.OAuthBinding, error) {
 	return s.repo.GetBindingBySysUser(ctx, sysUserID)
 }
+
+

@@ -94,3 +94,4 @@ func base64URLEncode(data []byte) string {
 func base64URLDecode(s string) ([]byte, error) {
 	return base64.RawURLEncoding.DecodeString(s)
 }
+

@@ -53,3 +53,4 @@ func (s *Server) Stop() error {
 	}
 	return s.server.Shutdown(context.Background())
 }
+

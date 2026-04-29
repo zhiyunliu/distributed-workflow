@@ -40,3 +40,4 @@ func (m *manager) Menu() sysmanager.MenuService             { return m.menuSvc }
 func (m *manager) Auth() sysmanager.AuthService             { return m.authSvc }
 func (m *manager) Permission() sysmanager.PermissionService { return m.permSvc }
 func (m *manager) Dictionary() sysmanager.DictionaryService { return m.dictSvc }
+

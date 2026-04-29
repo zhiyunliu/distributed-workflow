@@ -1,4 +1,4 @@
-﻿package engine
+package engine
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	api "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // contextManagerImpl ContextManager 实现（支持 Redis 快照）
@@ -130,3 +130,5 @@ func (c *contextManagerImpl) RestoreSnapshot(instanceID string, snapshotID strin
 	}
 	return c.redis.Set(bg, contextKey(instanceID), b, 72*time.Hour).Err()
 }
+
+

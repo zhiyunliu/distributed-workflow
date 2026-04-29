@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 	api "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api"
 )
 
@@ -342,3 +342,5 @@ func (s *Server) archiveAuditLogs(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
+
+

@@ -3,7 +3,7 @@ package api
 import (
 	"time"
 
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // WorkflowRepository SQL Server 持久化接口
@@ -162,3 +162,5 @@ type RedisRepository interface {
 	// DeleteCache 删除缓存
 	DeleteCache(key string) error
 }
+
+

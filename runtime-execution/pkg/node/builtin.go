@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // LogExecutor 日志打印执行器，将消息打印到 zerolog
@@ -63,3 +63,5 @@ func (e *SleepExecutor) Execute(config map[string]interface{}, input map[string]
 	}
 	return map[string]interface{}{"slept_ms": ms}, nil
 }
+
+

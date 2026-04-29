@@ -8,7 +8,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 const (
@@ -115,3 +115,5 @@ func (q *TaskQueue) Len() int {
 	}
 	return int(n)
 }
+
+

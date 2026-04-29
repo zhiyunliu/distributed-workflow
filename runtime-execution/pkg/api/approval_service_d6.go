@@ -3,7 +3,7 @@ package api
 import (
 	"context"
 
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // AdvancedApprovalService 高级审批服务接口（D6新增）
@@ -48,3 +48,5 @@ type AdvancedApprovalRepository interface {
 	// GetAddSignRecords 查询加签记录
 	GetAddSignRecords(ctx context.Context, instanceID, nodeID string) ([]*types.AddSignRecord, error)
 }
+
+

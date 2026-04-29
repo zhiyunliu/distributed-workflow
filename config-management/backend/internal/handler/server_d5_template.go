@@ -6,7 +6,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	types "github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	types "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 	api "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api"
 )
 
@@ -190,3 +190,5 @@ func (s *Server) exportTemplate(c *gin.Context) {
 	c.Header("Content-Disposition", "attachment; filename=template_"+template.TemplateID+".json")
 	c.Data(http.StatusOK, "application/json", data)
 }
+
+

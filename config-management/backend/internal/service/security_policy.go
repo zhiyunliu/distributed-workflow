@@ -129,3 +129,4 @@ func (t *LoginAttemptTracker) RecordSuccessAttempt(username string) {
 	defer t.mu.Unlock()
 	delete(t.attempts, username)
 }
+

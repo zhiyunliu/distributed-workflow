@@ -655,3 +655,4 @@ func scanDictRows(rows *sql.Rows) ([]*sysmodel.DictionaryItem, error) {
 	}
 	return items, rows.Err()
 }
+

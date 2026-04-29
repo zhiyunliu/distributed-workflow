@@ -3,7 +3,7 @@ package api
 import (
 	"context"
 
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // AnalyticsService 数据分析服务接口
@@ -30,3 +30,5 @@ type AnalyticsRepository interface {
 	RefreshWorkflowDailyStats(ctx context.Context, date string) error
 	RefreshApprovalDailyStats(ctx context.Context, date string) error
 }
+
+

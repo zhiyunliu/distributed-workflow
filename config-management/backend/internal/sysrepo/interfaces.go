@@ -52,3 +52,4 @@ type DictRepo interface {
 	Update(ctx context.Context, item *sysmodel.DictionaryItem) error
 	Delete(ctx context.Context, dicID int64) error
 }
+
