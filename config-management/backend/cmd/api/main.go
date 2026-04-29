@@ -60,6 +60,7 @@ func main() {
 	srv := handler.NewServer()
 	srv.SetSysManager(mgr, jwtSecret)
 	srv.SetD4WorkflowRoutes()
+	srv.RegisterFrontendRoutes() // 注册前端路由
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -89,4 +90,3 @@ func envOr(key, def string) string {
 	}
 	return def
 }
-

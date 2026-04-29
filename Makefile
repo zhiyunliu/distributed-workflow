@@ -1,4 +1,4 @@
-.PHONY: generate build test lint clean help
+.PHONY: generate build test lint clean help build-backend build-frontend build-all
 
 MODULE = github.com/zhiyunliu/distributed-workflow
 PROTO_DIR = proto
@@ -15,6 +15,14 @@ generate: ## 生成 protobuf 代码
 		--go-grpc_opt=Mproto/workflow.proto=github.com/zhiyunliu/distributed-workflow/proto \
 		proto/workflow.proto
 
+build-all: build-frontend build-backend ## 构建前端和后端
+
+build-frontend: ## 构建前端并复制到后端目录
+	./build-frontend.bat
+
+build-backend: ## 编译后端
+	go build ./config-management/backend/cmd/api/
+
 build: ## 编译所有包
 	go build ./...
 
@@ -22,7 +30,7 @@ test: ## 运行单元测试
 	go test -v -race -count=1 ./...
 
 test-short: ## 运行短测试（跳过集成测试）
-	go test -v -short -race -count=1 ./...
+	go test -v -race -count=1 ./...
 
 lint: ## 代码检查
 	go vet ./...
@@ -35,6 +43,10 @@ lint: ## 代码检查
 clean: ## 清理编译产物
 	go clean ./...
 	rm -f coverage.out
+	# 删除后端的dist目录（如果存在）
+	if [ -d "./config-management/backend/cmd/api/dist" ]; then \
+		rm -rf ./config-management/backend/cmd/api/dist; \
+	fi
 
 coverage: ## 生成测试覆盖率报告
 	go test -v -race -count=1 -coverprofile=coverage.out ./...
