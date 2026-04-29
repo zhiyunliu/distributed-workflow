@@ -87,7 +87,7 @@ onMounted(loadTree)
         <el-table-column prop="menuName" label="菜单名称" min-width="200" />
         <el-table-column prop="menuType" label="类型" width="80">
           <template #default="{ row }">
-            <el-tag size="small" :type="row.menuType === 'M' ? '' : row.menuType === 'C' ? 'success' : 'info'">
+            <el-tag size="small" :type="row.menuType === 'M' ? undefined : row.menuType === 'C' ? 'success' : 'info'">
               {{ row.menuType === 'M' ? '目录' : row.menuType === 'C' ? '菜单' : '按钮' }}
             </el-tag>
           </template>

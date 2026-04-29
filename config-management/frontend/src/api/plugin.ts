@@ -1,18 +1,19 @@
 import request from '@/utils/request'
+import type { ApiResponse } from '@/types'
 import type { PluginInfo, PluginConfig } from '@/types/plugin'
 
 export const pluginApi = {
   // 插件市场列表
   listMarket: (params: { page: number; pageSize: number }) =>
-    request.get<{ list: PluginInfo[]; total: number }>('/api/plugins/market', { params }),
+    request.get<ApiResponse<{ list: PluginInfo[]; total: number }>>('/api/plugins/market', { params }),
 
   // 已安装插件列表
   listInstalled: () =>
-    request.get<PluginConfig[]>('/api/plugins/installed'),
+    request.get<ApiResponse<PluginConfig[]>>('/api/plugins/installed'),
 
   // 插件详情
   get: (pluginId: string) =>
-    request.get<PluginInfo>(`/api/plugins/${pluginId}`),
+    request.get<ApiResponse<PluginInfo>>(`/api/plugins/${pluginId}`),
 
   // 安装插件
   install: (pluginId: string, data: { version?: string; configJson?: string }) =>
@@ -32,7 +33,7 @@ export const pluginApi = {
 
   // 获取插件配置
   getConfig: (pluginId: string) =>
-    request.get<PluginConfig>(`/api/plugins/${pluginId}/config`),
+    request.get<ApiResponse<PluginConfig>>(`/api/plugins/${pluginId}/config`),
 
   // 保存插件配置
   saveConfig: (pluginId: string, data: Partial<PluginConfig>) =>

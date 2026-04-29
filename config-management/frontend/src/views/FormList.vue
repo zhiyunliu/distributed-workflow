@@ -6,6 +6,8 @@ import { FormStatus } from '@/types/form'
 import type { FormDefinition, FormListParams } from '@/types/form'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
+type TagType = 'primary' | 'success' | 'warning' | 'info' | 'danger'
+
 const router = useRouter()
 const loading = ref(false)
 const list = ref<FormDefinition[]>([])
@@ -111,8 +113,8 @@ function goDesigner(row: FormDefinition) {
   router.push(`/form/designer/${row.formId}`)
 }
 
-function statusTag(status: number) {
-  const map: Record<number, string> = { 0: 'info', 1: 'success', 2: 'danger' }
+function statusTag(status: number): TagType {
+  const map: Record<number, TagType> = { 0: 'info', 1: 'success', 2: 'danger' }
   return map[status] || 'info'
 }
 function statusText(status: number) {

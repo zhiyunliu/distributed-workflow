@@ -7,8 +7,28 @@
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { workflowApi } from '@/api/workflow'
-import { ElMessage, ElLoading } from 'element-plus'
-import type { WorkflowDef } from '@/types'
+import { ElMessage } from 'element-plus'
+import type { WorkflowDef, WorkflowConnection, WorkflowNode } from '@/types'
+
+interface GraphNode {
+  id: string
+  type: string
+  properties?: Record<string, unknown>
+}
+
+interface GraphEdge {
+  id: string
+  sourceNodeId: string
+  targetNodeId: string
+  properties?: Record<string, unknown>
+}
+
+interface LogicFlowLike {
+  render(data: Record<string, unknown>): void
+  getGraphData(): { nodes: GraphNode[]; edges: GraphEdge[] }
+  destroy?: () => void
+  dnd?: { startDrag: (node: { type: string }) => void }
+}
 
 const route = useRoute()
 const router = useRouter()
@@ -18,10 +38,9 @@ const containerRef = ref<HTMLElement | null>(null)
 const currentDef = ref<Partial<WorkflowDef>>({ name: '新建流程', description: '' })
 const loading = ref(false)
 const saving = ref(false)
-const dialogVisible = ref(false)
 
 // LogicFlow 实例
-let lf: unknown = null
+let lf: LogicFlowLike | null = null
 
 // 节点面板配置
 const nodeTypes = [
@@ -38,18 +57,15 @@ async function initLogicFlow() {
   if (!containerRef.value) return
   try {
     const { default: LogicFlow } = await import('@logicflow/core')
-    await import('@logicflow/core/es/index.css')
-    const { Menu, DndPanel, SelectionSelect, MiniMap } = await import('@logicflow/extension')
-    await import('@logicflow/extension/es/index.css')
+    await import('@logicflow/core/dist/style/index.css')
 
     lf = new LogicFlow({
       container: containerRef.value,
-      plugins: [Menu, DndPanel, SelectionSelect, MiniMap],
       grid: true,
       keyboard: { enabled: true },
-    })
+    }) as unknown as LogicFlowLike
 
-    ;(lf as Record<string, Function>).render({})
+    lf.render({})
 
     if (workflowId.value) {
       await loadWorkflow()
@@ -79,7 +95,7 @@ async function saveDraft() {
   saving.value = true
   try {
     // 获取 LogicFlow 的图形数据并转换为后端格式
-    const graphData = lf ? (lf as Record<string, Function>).getGraphData() : { nodes: [], edges: [] }
+    const graphData = lf ? lf.getGraphData() : { nodes: [], edges: [] }
     const payload: Partial<WorkflowDef> = {
       ...currentDef.value,
       nodes: transformNodes(graphData),
@@ -128,48 +144,46 @@ async function validateWorkflow() {
   }
 }
 
-function transformNodes(graphData: Record<string, unknown>) {
+function transformNodes(graphData: { nodes: GraphNode[] }): Record<string, WorkflowNode> {
   // 将 LogicFlow nodes 转换为后端 WorkflowNode 格式
-  const nodes = (graphData.nodes as unknown[]) || []
-  return nodes.reduce<Record<string, unknown>>((acc, n) => {
-    const node = n as Record<string, unknown>
-    const id = node.id as string
+  const nodes = graphData.nodes || []
+  return nodes.reduce<Record<string, WorkflowNode>>((acc, node) => {
+    const id = node.id
+    const props = node.properties || {}
     acc[id] = {
       id,
-      name: (node.properties as Record<string, unknown>)?.label || node.type,
+      name: (props.label as string) || node.type,
       type: node.type,
       description: '',
-      config: node.properties || {},
+      config: props,
     }
     return acc
   }, {})
 }
 
-function transformEdges(graphData: Record<string, unknown>) {
-  const edges = (graphData.edges as unknown[]) || []
-  return edges.map((e) => {
-    const edge = e as Record<string, unknown>
+function transformEdges(graphData: { edges: GraphEdge[] }): WorkflowConnection[] {
+  const edges = graphData.edges || []
+  return edges.map((edge) => {
+    const condition = edge.properties?.condition
     return {
       id: edge.id,
       sourceNodeId: edge.sourceNodeId,
       targetNodeId: edge.targetNodeId,
       type: 'sequence',
-      condition: (edge.properties as Record<string, unknown>)?.condition || '',
+      condition: typeof condition === 'string' ? condition : '',
     }
   })
 }
 
 function onDragNode(type: string) {
-  if (lf) {
-    ;(lf as Record<string, Function>).dnd.startDrag({ type })
-  }
+  lf?.dnd?.startDrag({ type })
 }
 
 onMounted(initLogicFlow)
 
 onBeforeUnmount(() => {
   if (lf) {
-    ;(lf as Record<string, Function>).destroy?.()
+    lf.destroy?.()
     lf = null
   }
 })

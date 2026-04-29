@@ -5,6 +5,8 @@ import { workflowApi } from '@/api/workflow'
 import type { WorkflowDef } from '@/types'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
+type TagType = 'primary' | 'success' | 'warning' | 'info' | 'danger'
+
 const router = useRouter()
 const loading = ref(false)
 const list = ref<WorkflowDef[]>([])
@@ -42,8 +44,8 @@ async function handleDelete(row: WorkflowDef) {
   ElMessage.warning('删除功能待后端接口对接')
 }
 
-function statusTag(status: string) {
-  const map: Record<string, string> = {
+function statusTag(status: string): TagType {
+  const map: Record<string, TagType> = {
     draft: 'info',
     published: 'success',
     disabled: 'danger',

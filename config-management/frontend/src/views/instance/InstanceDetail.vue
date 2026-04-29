@@ -5,6 +5,8 @@ import { workflowApi } from '@/api/workflow'
 import { instanceApi } from '@/api/instance'
 import type { WorkflowInstance, AuditLog } from '@/types'
 
+type TagType = 'primary' | 'success' | 'warning' | 'info' | 'danger'
+
 const route = useRoute()
 const router = useRouter()
 const instanceId = route.params.id as string
@@ -36,8 +38,8 @@ async function handleCancel() {
   await loadData()
 }
 
-function statusType(status: string) {
-  const map: Record<string, string> = {
+function statusType(status: string): TagType {
+  const map: Record<string, TagType> = {
     running: 'primary',
     completed: 'success',
     failed: 'danger',

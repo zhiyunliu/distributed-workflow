@@ -2,6 +2,7 @@
   "name": "distributed-workflow-web",
   "version": "0.8.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",

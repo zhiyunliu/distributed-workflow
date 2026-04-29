@@ -4,6 +4,8 @@ import { useRouter } from 'vue-router'
 import { instanceApi } from '@/api/instance'
 import type { WorkflowInstance } from '@/types'
 
+type TagType = 'primary' | 'success' | 'warning' | 'info' | 'danger'
+
 const router = useRouter()
 const loading = ref(false)
 const list = ref<WorkflowInstance[]>([])
@@ -44,8 +46,8 @@ async function loadList() {
   }
 }
 
-function statusType(status: string) {
-  const map: Record<string, string> = {
+function statusType(status: string): TagType {
+  const map: Record<string, TagType> = {
     running: 'primary',
     completed: 'success',
     failed: 'danger',
