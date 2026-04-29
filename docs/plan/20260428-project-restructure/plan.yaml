@@ -1,0 +1,1252 @@
+plan_id: 20260428-project-restructure
+objective: >
+  将 distributed-workflow 项目代码从当前扁平结构迁移到 architectural-design.md
+  规定的目录结构，保留根目录单 go.mod，移动文件并调整包名/import 路径，
+  同步重构 engine 为依赖 interfaces（依赖倒置），将管理路由与触发路由分离。
+created_at: "2026-04-28T00:00:00Z"
+created_by: gem-planner
+status: pending
+research_confidence: high
+
+plan_metrics:
+  wave_1_task_count: 3
+  total_dependencies: 22
+  risk_score: high
+
+tldr: |
+  迁移分 7 波次执行：
+  Wave 1 移动零依赖的底层 types/dag/proto；
+  Wave 2 移动并重命名 interfaces → pkg/api；
+  Wave 3 迁移存储层（sqlserver/redis）与共享工具（jwtutil/plugin/rpc/registry）；
+  Wave 4 迁移 worker 层（worker + executors）；
+  Wave 5 重构 engine（移除 sqlserver 直接依赖，改用 interfaces）；
+  Wave 6 拆分 endpoint/http 路由（管理路由→config-management handler，触发路由→pkg/endpoint）；
+  Wave 7 迁移 sysbuiltin/sysmanager/sysmodel/sysrepo/syssqlserver + 前端 web。
+  全部完成后：更新 examples import，验证编译。
+
+open_questions: []
+
+gaps: []
+
+pre_mortem:
+  overall_risk_level: high
+  critical_failure_modes:
+    - scenario: engine.go 中直接 import storage/sqlserver 的依赖移除后，编译报错
+      likelihood: high
+      impact: critical
+      mitigation: >
+        Wave 5 任务必须完整扫描 engine/*.go 中所有 sqlserver import，
+        全部替换为 interfaces.WorkflowRepository 注入；
+        NewRepository 调用只保留在 cmd/engine/main.go 中。
+    - scenario: endpoint/http/server.go 中同时持有管理路由和触发路由，拆分后双端编译失败
+      likelihood: high
+      impact: high
+      mitigation: >
+        Wave 6 先在新目录创建新 Server 结构体，再从旧 server.go 按路由类型剪切，
+        旧目录保留空 doc.go 过渡，最终 Wave 8（清理）删除旧文件。
+    - scenario: sysbuiltin 中 package 名为 builtin，迁移后路径变化导致调用方 import 失败
+      likelihood: medium
+      impact: high
+      mitigation: >
+        迁移时统一将 package builtin 更名为 service，
+        并在任务描述中列出所有调用方（endpoint/http/server_d4.go）一并修改。
+    - scenario: go.mod 模块路径不变但文件物理路径变化，IDE/工具链缓存失效
+      likelihood: medium
+      impact: medium
+      mitigation: >
+        每波次结束后运行 go build ./... 验证，Wave 完成后提交一次 git checkpoint。
+    - scenario: 循环依赖：engine 依赖 interfaces，interfaces 依赖 types；新 pkg/api 同名冲突
+      likelihood: medium
+      impact: high
+      mitigation: >
+        interfaces → pkg/api 时 package 名改为 api，确认不与标准库 net/http api 冲突；
+        types → 路径变更后统一更新所有 import。
+  assumptions:
+    - go.mod module 名保持 github.com/zhiyunliu/distributed-workflow 不变
+    - gin、grpc、redis、mssqldb 等第三方依赖路径不变
+    - 迁移期间不新增业务功能，只做物理搬移 + import 路径修正
+    - 每波次结束后执行 go build ./... 验证通过再进入下一波
+
+implementation_specification:
+  code_structure: |
+    迁移后根目录结构：
+    distributed-workflow/
+    ├── go.mod                          # 保留，module 名不变
+    ├── config-management/
+    │   ├── frontend/                   # 原 web/ 整体移动
+    │   └── backend/
+    │       ├── cmd/api/main.go         # 新建：配置管理服务入口
+    │       └── internal/
+    │           ├── handler/            # 原 endpoint/http/ 中管理路由文件
+    │           │   ├── server.go
+    │           │   ├── server_d4.go    # 用户/角色/菜单/权限/认证
+    │           │   ├── server_d4_workflow.go
+    │           │   ├── server_d5_template.go
+    │           │   └── server_d6_*.go (form/approval/oauth/plugin/stats)
+    │           ├── service/            # 原 sysbuiltin/（package builtin → service）
+    │           └── dao/                # 原 syssqlserver/ + sysrepo/
+    ├── runtime-execution/
+    │   ├── cmd/
+    │   │   ├── engine/main.go          # 新建：Engine 启动入口
+    │   │   └── worker/main.go          # 新建：NodeWorker 启动入口
+    │   ├── internal/
+    │   │   ├── engine/                 # 原 engine/（重构后，移除 sqlserver 直接 import）
+    │   │   ├── worker/                 # 原 worker/
+    │   │   ├── storage/
+    │   │   │   ├── sqlserver/          # 原 storage/sqlserver/
+    │   │   │   └── redis/              # 原 storage/redis/
+    │   │   ├── common/
+    │   │   │   ├── dag/                # 原 dag/
+    │   │   │   ├── jwtutil/            # 原 jwtutil/
+    │   │   │   ├── plugin/             # 原 plugin/
+    │   │   │   ├── rpc/                # 原 rpc/
+    │   │   │   └── registry/           # 原 registry/nacos/
+    │   │   └── proto/                  # 原 proto/
+    │   └── pkg/
+    │       ├── api/                    # 原 interfaces/（package api）
+    │       ├── node/                   # 原 worker/executors/
+    │       ├── endpoint/               # 原 endpoint/http/触发路由 + endpoint/schedule/
+    │       └── loader/                 # 新建 WorkflowLoader 实现
+    ├── examples/                       # 保留，更新 import
+    └── docs/                           # 保留
+  affected_areas:
+    - 全部 Go 源文件的 import 路径
+    - endpoint/http/ 路由拆分（管理 vs 触发）
+    - engine/*.go 移除 storage/sqlserver 直接依赖
+    - sysbuiltin package 名：builtin → service
+    - interfaces package 名：interfaces → api
+    - 新增 cmd/api/main.go, cmd/engine/main.go, cmd/worker/main.go 骨架
+  component_details:
+    - component: types → runtime-execution/internal/proto + runtime-execution/pkg/api（types 保留共享）
+      responsibility: 核心类型定义，被 interfaces/engine/storage 引用
+      interfaces: [WorkflowDef, WorkflowInstance, WorkflowNodeState]
+      dependencies: []
+      integration_points: [engine, storage/sqlserver, interfaces]
+    - component: interfaces → runtime-execution/pkg/api
+      responsibility: 所有可扩展接口定义（依赖倒置核心）
+      interfaces: [WorkflowRepository, WorkflowService, SchedulerService, ...]
+      dependencies: [types]
+      integration_points: [engine, endpoint/http, sysbuiltin]
+    - component: engine → runtime-execution/internal/engine
+      responsibility: 工作流引擎核心，不再直接依赖 sqlserver
+      interfaces: [Engine.New(cfg, WorkflowRepository, RedisRepository)]
+      dependencies: [pkg/api, internal/common/rpc, internal/proto]
+      integration_points: [cmd/engine/main.go]
+    - component: sysbuiltin → config-management/backend/internal/service
+      responsibility: 用户/角色/菜单/权限/字典内置实现
+      interfaces: [sysmanager.Manager]
+      dependencies: [sysmanager, sysrepo, sysmodel]
+      integration_points: [config-management/backend/internal/handler]
+    - component: endpoint/http(管理路由) → config-management/backend/internal/handler
+      responsibility: 系统管理、认证、表单、高级审批等管理端 HTTP 路由
+      interfaces: [Server, SetSysManager, SetD6FormService, ...]
+      dependencies: [pkg/api, internal/service, sysmanager]
+      integration_points: [config-management/backend/cmd/api/main.go]
+    - component: endpoint/http(触发路由) → runtime-execution/pkg/endpoint
+      responsibility: 工作流触发（D1-D3 核心工作流路由）+ 定时调度端点
+      interfaces: [Server.registerRoutes, SetD3Services]
+      dependencies: [pkg/api, internal/engine]
+      integration_points: [runtime-execution/cmd/engine/main.go]
+
+contracts:
+  - from_task: T01-migrate-types
+    to_task: T02-migrate-interfaces
+    interface: >
+      types 包路径变更为
+      github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types
+      （或保持根目录 types/ 作为共享包，需在 T02 中确认选择）
+    format: "Go import path string"
+  - from_task: T02-migrate-interfaces
+    to_task: T05-refactor-engine
+    interface: >
+      interfaces 包改名为 api，路径：
+      github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api
+      engine 全部 interfaces.XXX 引用改为 api.XXX
+    format: "Go import path string"
+  - from_task: T03-migrate-storage
+    to_task: T05-refactor-engine
+    interface: >
+      storage/sqlserver 路径：
+      github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/storage/sqlserver
+      engine.go 中 New() 函数参数类型保持 api.WorkflowRepository 接口，
+      不再 import sqlserver 包，sqlserver.NewRepository 移至 cmd/engine/main.go
+    format: "Go import path string"
+  - from_task: T05-refactor-engine
+    to_task: T06-split-endpoint-trigger
+    interface: >
+      engine 包路径：
+      github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/engine
+      触发路由 Server 注入 engine.Engine 时通过接口（api.WorkflowService）注入
+    format: "Go import path string"
+  - from_task: T07-migrate-sysbuiltin
+    to_task: T08-migrate-mgmt-handler
+    interface: >
+      service 包路径：
+      github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/service
+      handler 中 NewManager 调用从 builtin.NewManager 改为 service.NewManager
+    format: "Go import path string"
+  - from_task: T08-migrate-mgmt-handler
+    to_task: T09-create-cmd-stubs
+    interface: >
+      handler.NewServer() 签名与配置管理 cmd/api/main.go 的组装逻辑
+    format: "Go function signature"
+
+tasks:
+  # ═══════════════════════════════════════════════════════════════════
+  # WAVE 1 — 零依赖底层包迁移（types / dag / proto）
+  # ═══════════════════════════════════════════════════════════════════
+  - id: T01-migrate-types
+    title: 迁移 types/ 和 dag/ 到 runtime-execution/internal/common/
+    description: |
+      将 types/ 下所有 .go 文件复制到
+      runtime-execution/internal/common/types/，
+      将 dag/ 复制到
+      runtime-execution/internal/common/dag/。
+
+      具体操作：
+      1. 新建目录 runtime-execution/internal/common/types/
+      2. 复制 types/*.go，package 名保持 types
+      3. 新建目录 runtime-execution/internal/common/dag/
+      4. 复制 dag/*.go，package 名保持 dag
+      5. 在每个原文件顶部添加注释标记已迁移，暂不删除原文件（Wave 8 清理）
+      6. 新增 runtime-execution/internal/common/types/doc.go（package 声明）
+
+      注意：types 是全局共享包，所有其他包均依赖它，
+      迁移后 import 路径为：
+      github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: [types/, dag/]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: types/types.go
+        description: 核心工作流类型定义
+      - path: types/analytics_types.go
+        description: 分析统计类型
+      - path: types/approval_types_d6.go
+        description: 高级审批类型
+      - path: types/form_types.go
+        description: 表单引擎类型
+      - path: types/oauth_types.go
+        description: OAuth类型
+      - path: types/plugin_types.go
+        description: 插件类型
+      - path: dag/dag.go
+        description: DAG算法实现
+      - path: dag/dag_test.go
+        description: DAG测试
+    estimated_effort: small
+    estimated_files: 3
+    estimated_lines: 80
+    focus_area: runtime-execution/internal/common/
+    verification:
+      - "go build github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+      - "go build github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/dag"
+    acceptance_criteria:
+      - types/ 和 dag/ 下所有文件在新路径下可编译通过
+      - package 名保持不变（types, dag）
+      - 原文件保留（不删除），等待 Wave 8 清理
+    failure_modes:
+      - scenario: types 包内部有 init() 函数注册逻辑导致双重注册
+        likelihood: low
+        impact: medium
+        mitigation: 检查所有 init()，迁移期间仅保留新路径的 init()，旧路径注释掉
+    tech_stack: [Go 1.21+]
+    test_coverage: "go test ./runtime-execution/internal/common/dag/..."
+
+  - id: T02-migrate-proto
+    title: 迁移 proto/ 到 runtime-execution/internal/proto/
+    description: |
+      将 proto/ 目录整体复制到
+      runtime-execution/internal/proto/。
+
+      具体操作：
+      1. 新建目录 runtime-execution/internal/proto/
+      2. 复制 proto/*.go（workflow.pb.go, workflow_grpc.pb.go, workflow_d2.go）
+      3. package 名保持 proto
+      4. 更新其中的 import（如引用了 types，改为新路径）
+      5. 原文件保留等待清理
+
+      迁移后 import 路径：
+      github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/proto
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: [proto/]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: [T01-migrate-types]
+    conflicts_with: []
+    context_files:
+      - path: proto/workflow.pb.go
+        description: Protobuf 生成代码
+      - path: proto/workflow_grpc.pb.go
+        description: gRPC 生成代码
+      - path: proto/workflow_d2.go
+        description: D2 扩展类型
+    estimated_effort: small
+    estimated_files: 2
+    estimated_lines: 40
+    focus_area: runtime-execution/internal/proto/
+    verification:
+      - "go build github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/proto"
+    acceptance_criteria:
+      - proto/ 下所有文件在新路径可编译通过
+      - import types 路径已更新为新路径
+    failure_modes:
+      - scenario: protobuf 生成文件中有特殊 build tag 导致路径变更失效
+        likelihood: low
+        impact: low
+        mitigation: 检查文件顶部 //go:build 标记，确保无冲突
+    tech_stack: [Go 1.21+, gRPC, protobuf]
+    test_coverage: null
+
+  - id: T03-migrate-jwtutil-plugin-registry
+    title: 迁移 jwtutil/ plugin/ rpc/ registry/ 到 runtime-execution/internal/common/
+    description: |
+      将共享工具包移动到 runtime-execution/internal/common/ 下各子目录。
+
+      具体操作：
+      1. jwtutil/jwt.go → runtime-execution/internal/common/jwtutil/jwt.go
+         package 名保持 jwtutil
+      2. plugin/doc.go, registry.go, sdk.go →
+         runtime-execution/internal/common/plugin/
+         package 名保持 plugin
+      3. rpc/doc.go, engine_client.go, worker_client.go →
+         runtime-execution/internal/common/rpc/
+         package 名保持 rpc
+      4. registry/nacos/*.go →
+         runtime-execution/internal/common/registry/nacos/
+         package 名保持 nacos
+
+      各文件内的 import types 路径改为新路径：
+      github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types
+
+      迁移后路径：
+      - .../internal/common/jwtutil
+      - .../internal/common/plugin
+      - .../internal/common/rpc
+      - .../internal/common/registry/nacos
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: [jwtutil/, plugin/, rpc/, registry/]
+    priority: medium
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: [T01-migrate-types]
+    conflicts_with: []
+    context_files:
+      - path: jwtutil/jwt.go
+        description: JWT 生成/验证工具
+      - path: plugin/registry.go
+        description: 插件注册表
+      - path: plugin/sdk.go
+        description: 插件 SDK
+      - path: rpc/engine_client.go
+        description: Engine gRPC 客户端
+      - path: rpc/worker_client.go
+        description: Worker gRPC 客户端
+      - path: registry/nacos/
+        description: Nacos 注册中心实现
+    estimated_effort: small
+    estimated_files: 3
+    estimated_lines: 60
+    focus_area: runtime-execution/internal/common/
+    verification:
+      - "go build github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/..."
+    acceptance_criteria:
+      - jwtutil/plugin/rpc/registry 在新路径下编译通过
+      - 所有内部 import types 路径已更新
+    failure_modes:
+      - scenario: rpc 包引用了 proto 包，需确认迁移顺序
+        likelihood: medium
+        impact: medium
+        mitigation: T03 与 T02 串行（T03 依赖 T02），rpc import proto 新路径
+    tech_stack: [Go 1.21+]
+    test_coverage: null
+
+  # ═══════════════════════════════════════════════════════════════════
+  # WAVE 2 — interfaces 迁移为 pkg/api
+  # ═══════════════════════════════════════════════════════════════════
+  - id: T04-migrate-interfaces
+    title: 迁移 interfaces/ → runtime-execution/pkg/api/（package api）
+    description: |
+      将 interfaces/ 下所有文件复制到
+      runtime-execution/pkg/api/，并将 package 名从 interfaces 改为 api。
+
+      具体操作：
+      1. 新建目录 runtime-execution/pkg/api/
+      2. 复制以下文件并修改 package 声明：
+         - interfaces/analytics_service.go → pkg/api/analytics_service.go
+         - interfaces/approval_service_d6.go → pkg/api/approval_service_d6.go
+         - interfaces/components.go → pkg/api/components.go
+         - interfaces/doc.go → pkg/api/doc.go
+         - interfaces/form_repository.go → pkg/api/form_repository.go
+         - interfaces/form_service.go → pkg/api/form_service.go
+         - interfaces/oauth_service.go → pkg/api/oauth_service.go
+         - interfaces/plugin_service.go → pkg/api/plugin_service.go
+         - interfaces/repository.go → pkg/api/repository.go
+         - interfaces/services.go → pkg/api/services.go
+      3. 每个文件第一行: package interfaces → package api
+      4. 文件内 import types 路径改为：
+         github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types
+      5. 原 interfaces/ 保留，等待 Wave 8 清理
+
+      新 import 路径：
+      github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: [interfaces/]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: [T01-migrate-types]
+    conflicts_with: []
+    context_files:
+      - path: interfaces/repository.go
+        description: 仓储接口（WorkflowRepository, RedisRepository）
+      - path: interfaces/services.go
+        description: 核心服务接口（WorkflowService, SchedulerService 等）
+      - path: interfaces/components.go
+        description: 组件接口（AuditLogManager, LifecycleManager 等）
+      - path: interfaces/analytics_service.go
+        description: 分析统计服务接口
+      - path: interfaces/approval_service_d6.go
+        description: 高级审批服务接口
+      - path: interfaces/form_service.go
+        description: 表单引擎服务接口
+      - path: interfaces/oauth_service.go
+        description: OAuth 服务接口
+      - path: interfaces/plugin_service.go
+        description: 插件服务接口
+    estimated_effort: small
+    estimated_files: 3
+    estimated_lines: 100
+    focus_area: runtime-execution/pkg/api/
+    verification:
+      - "go build github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api"
+    acceptance_criteria:
+      - pkg/api 下所有接口文件编译通过
+      - package 名为 api
+      - import types 路径已更新为新路径
+    failure_modes:
+      - scenario: 下游代码（engine/endpoint）同时 import 旧 interfaces 和新 api，产生类型不兼容
+        likelihood: high
+        impact: high
+        mitigation: >
+          Wave 2 完成后，Wave 3-6 的所有任务必须同步更新 import，
+          不允许混用旧 interfaces 和新 api 路径
+    tech_stack: [Go 1.21+]
+    test_coverage: null
+
+  # ═══════════════════════════════════════════════════════════════════
+  # WAVE 3 — 存储层迁移
+  # ═══════════════════════════════════════════════════════════════════
+  - id: T05-migrate-storage-sqlserver
+    title: 迁移 storage/sqlserver/ → runtime-execution/internal/storage/sqlserver/
+    description: |
+      将工作流引擎的 SQL Server 存储实现移动到新路径。
+
+      具体操作：
+      1. 新建目录 runtime-execution/internal/storage/sqlserver/
+      2. 复制 storage/sqlserver/ 下所有 .go 文件和 .sql 文件：
+         - repository.go（主仓储实现）
+         - analytics_repository.go
+         - approval_repository_d6.go
+         - form_repository.go
+         - oauth_repository.go
+         - plugin_repository.go
+         - template_repository.go
+         - doc.go
+         - schema*.sql（全部 SQL schema 文件）
+      3. package 名保持 sqlserver
+      4. 更新 import：
+         - types → runtime-execution/internal/common/types
+         - interfaces → runtime-execution/pkg/api（所有 interfaces.XXX → api.XXX）
+      5. 原 storage/sqlserver/ 保留等待清理
+
+      新 import 路径：
+      github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/storage/sqlserver
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    covers: [storage/sqlserver/]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: [T04-migrate-interfaces]
+    conflicts_with: []
+    context_files:
+      - path: storage/sqlserver/repository.go
+        description: 核心 WorkflowRepository SQL Server 实现
+      - path: storage/sqlserver/analytics_repository.go
+        description: 分析统计仓储实现
+      - path: storage/sqlserver/form_repository.go
+        description: 表单仓储实现
+      - path: storage/sqlserver/template_repository.go
+        description: 模板仓储实现
+      - path: interfaces/repository.go
+        description: 实现的接口定义（参照）
+    estimated_effort: medium
+    estimated_files: 3
+    estimated_lines: 150
+    focus_area: runtime-execution/internal/storage/sqlserver/
+    verification:
+      - "go build github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/storage/sqlserver"
+    acceptance_criteria:
+      - sqlserver 包在新路径编译通过
+      - 实现 api.WorkflowRepository 接口（go vet 接口满足检查）
+      - 所有 import 已更新为新路径
+    failure_modes:
+      - scenario: repository.go 中有 dbProvider 接口定义，engine.go 中也定义了同名接口
+        likelihood: medium
+        impact: medium
+        mitigation: 确认 dbProvider 的归属，统一放在 storage/sqlserver 或 engine，避免重复定义
+    tech_stack: [Go 1.21+, SQL Server, go-mssqldb]
+    test_coverage: null
+
+  - id: T06-migrate-storage-redis
+    title: 迁移 storage/redis/ → runtime-execution/internal/storage/redis/
+    description: |
+      将 Redis 存储实现移动到新路径。
+
+      具体操作：
+      1. 新建目录 runtime-execution/internal/storage/redis/
+      2. 复制 storage/redis/ 下所有 .go 文件
+      3. package 名保持 redis（若原为 redis 则不变）
+      4. 更新 import：
+         - types → runtime-execution/internal/common/types
+         - interfaces → runtime-execution/pkg/api
+      5. 原 storage/redis/ 保留等待清理
+
+      新 import 路径：
+      github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/storage/redis
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    covers: [storage/redis/]
+    priority: medium
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: [T04-migrate-interfaces]
+    conflicts_with: []
+    context_files:
+      - path: storage/redis/
+        description: Redis 存储实现（分布式锁等）
+    estimated_effort: small
+    estimated_files: 2
+    estimated_lines: 60
+    focus_area: runtime-execution/internal/storage/redis/
+    verification:
+      - "go build github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/storage/redis"
+    acceptance_criteria:
+      - redis 包在新路径编译通过
+      - 实现 api.RedisRepository 接口
+    failure_modes:
+      - scenario: redis 包名与 go-redis/v9 包名冲突
+        likelihood: low
+        impact: low
+        mitigation: 若冲突则将本地 package 名改为 redisstore
+    tech_stack: [Go 1.21+, go-redis/v9]
+    test_coverage: null
+
+  # ═══════════════════════════════════════════════════════════════════
+  # WAVE 4 — Worker 迁移
+  # ═══════════════════════════════════════════════════════════════════
+  - id: T07-migrate-worker
+    title: 迁移 worker/ → runtime-execution/internal/worker/ 和 pkg/node/
+    description: |
+      将 worker 层拆分为内部实现和公开节点接口。
+
+      具体操作：
+      1. worker/doc.go, server.go, task_manager.go, worker.go,
+         executor_container.go, executor_container_test.go →
+         runtime-execution/internal/worker/
+         package 名保持 worker
+      2. worker/executors/*.go（builtin.go, http.go, human_task.go, executors_test.go）→
+         runtime-execution/pkg/node/
+         package 名改为 node
+      3. 更新所有 import：
+         - types → runtime-execution/internal/common/types
+         - interfaces → runtime-execution/pkg/api
+         - rpc → runtime-execution/internal/common/rpc
+         - plugin → runtime-execution/internal/common/plugin
+         - proto → runtime-execution/internal/proto
+      4. 原 worker/ 保留等待清理
+
+      新 import 路径：
+      - github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/worker
+      - github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/node
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    covers: [worker/, worker/executors/]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: [T04-migrate-interfaces, T02-migrate-proto, T03-migrate-jwtutil-plugin-registry]
+    conflicts_with: []
+    context_files:
+      - path: worker/worker.go
+        description: NodeWorker 核心实现
+      - path: worker/server.go
+        description: Worker HTTP/gRPC 服务
+      - path: worker/task_manager.go
+        description: 任务管理器
+      - path: worker/executor_container.go
+        description: 执行器容器
+      - path: worker/executors/builtin.go
+        description: 内置执行器注册
+      - path: worker/executors/http.go
+        description: HTTP 执行器
+      - path: worker/executors/human_task.go
+        description: 人工任务执行器
+    estimated_effort: medium
+    estimated_files: 3
+    estimated_lines: 200
+    focus_area: runtime-execution/internal/worker/ 和 runtime-execution/pkg/node/
+    verification:
+      - "go build github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/worker"
+      - "go build github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/node"
+      - "go test github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/worker/..."
+    acceptance_criteria:
+      - worker 核心在 internal/worker 编译通过
+      - 内置执行器在 pkg/node 编译通过，package 名为 node
+      - 所有 import 已更新为新路径
+    failure_modes:
+      - scenario: executor_container.go 引用了 worker 包内部类型，拆包后产生循环依赖
+        likelihood: medium
+        impact: high
+        mitigation: >
+          拆分前检查 executor_container 的依赖，
+          若有循环依赖则将 executor_container 也移入 internal/worker 而非 pkg/node
+    tech_stack: [Go 1.21+, gRPC]
+    test_coverage: "go test ./runtime-execution/internal/worker/..."
+
+  # ═══════════════════════════════════════════════════════════════════
+  # WAVE 5 — Engine 重构迁移（核心，移除 sqlserver 直接依赖）
+  # ═══════════════════════════════════════════════════════════════════
+  - id: T08-refactor-engine
+    title: 重构 engine/ → runtime-execution/internal/engine/（移除 sqlserver 直接 import）
+    description: |
+      这是最关键的迁移任务。engine 必须完全通过 api 接口访问存储，
+      不能直接 import storage/sqlserver。
+
+      具体操作：
+      1. 新建目录 runtime-execution/internal/engine/
+      2. 复制 engine/ 下所有 .go 文件
+      3. 修改 engine.go：
+         a. 删除 import "github.com/zhiyunliu/distributed-workflow/storage/sqlserver"
+         b. New() 函数签名改为仅接受接口参数：
+            func New(cfg Config, repo api.WorkflowRepository,
+                     redis api.RedisRepository, redisClient *redis.Client) *Engine
+         c. dbProvider 接口和对 sqlserver.Repository 的直接引用全部移除
+      4. 全部文件 import 路径批量更新：
+         - interfaces.XXX → api.XXX
+         - import "...interfaces" → import api "...runtime-execution/pkg/api"
+         - import "...storage/sqlserver" → 删除
+         - import "...plugin" → import "...runtime-execution/internal/common/plugin"
+         - import "...rpc" → import "...runtime-execution/internal/common/rpc"
+         - import "...types" → import "...runtime-execution/internal/common/types"
+         - import "...proto" → import "...runtime-execution/internal/proto"
+      5. package 名保持 engine
+      6. 原 engine/ 保留等待清理
+
+      受影响文件（共 24 个）：
+      advanced_approval_service.go, analytics_service.go, approval_service.go,
+      audit_log_manager.go, callback_manager.go, context_manager.go, doc.go,
+      endpoint_manager.go, engine.go, error_handler.go, failover_manager.go,
+      form_service.go, instance_state.go, lifecycle_manager.go, oauth_service.go,
+      plugin_service.go, scheduler.go, schedule_manager.go, server.go,
+      subflow_manager.go, template_service.go, version_manager.go,
+      worker_manager.go, workflow_service.go
+
+      新 import 路径：
+      github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/engine
+    wave: 5
+    agent: gem-implementer
+    prototype: false
+    covers: [engine/]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: [T04-migrate-interfaces, T05-migrate-storage-sqlserver, T06-migrate-storage-redis, T03-migrate-jwtutil-plugin-registry, T02-migrate-proto]
+    conflicts_with: []
+    context_files:
+      - path: engine/engine.go
+        description: 引擎核心，New() 函数，当前直接 import sqlserver
+      - path: engine/workflow_service.go
+        description: 工作流管理服务实现
+      - path: engine/scheduler.go
+        description: 调度服务实现
+      - path: engine/instance_state.go
+        description: 实例状态管理实现
+      - path: engine/worker_manager.go
+        description: Worker 管理服务实现
+      - path: engine/failover_manager.go
+        description: 故障转移管理
+      - path: engine/server.go
+        description: Engine gRPC 服务端
+      - path: interfaces/services.go
+        description: 需要满足的接口定义（参照）
+    estimated_effort: large
+    estimated_files: 3
+    estimated_lines: 280
+    focus_area: runtime-execution/internal/engine/
+    verification:
+      - "go build github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/engine"
+      - "grep -r 'storage/sqlserver' runtime-execution/internal/engine/ # 必须无输出"
+      - "go vet github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/engine/..."
+    acceptance_criteria:
+      - engine 包在新路径编译通过
+      - engine 包中无任何 storage/sqlserver import（grep 验证）
+      - New() 函数只接受 api.WorkflowRepository 接口参数
+      - 所有 import 已更新为新路径
+    failure_modes:
+      - scenario: engine 内部 24 个文件中存在遗漏的 sqlserver 引用
+        likelihood: high
+        impact: high
+        mitigation: 迁移后执行 grep -r "sqlserver" runtime-execution/internal/engine/，零容忍
+      - scenario: engine 中的 dbProvider 接口被 sqlserver.Repository 隐式实现，移除后编译报错
+        likelihood: medium
+        impact: high
+        mitigation: 将 dbProvider 接口改为通过 api 包统一暴露，或移至 storage/sqlserver 内部
+      - scenario: engine 的 24 个文件中 import 替换遗漏，导致 undefined symbol
+        likelihood: medium
+        impact: high
+        mitigation: 使用系统性的 grep+replace 逐文件验证，每文件修改后立即 go build 该文件
+    tech_stack: [Go 1.21+, gRPC, Redis]
+    test_coverage: "go test github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/engine/..."
+
+  # ═══════════════════════════════════════════════════════════════════
+  # WAVE 6 — Endpoint 拆分（触发路由 vs 管理路由）
+  # ═══════════════════════════════════════════════════════════════════
+  - id: T09-migrate-endpoint-trigger
+    title: 迁移触发路由到 runtime-execution/pkg/endpoint/
+    description: |
+      从 endpoint/http/ 中提取工作流核心触发路由（D1-D3 工作流、实例、审批、端点管理路由），
+      连同 endpoint/schedule/ 一起移至 runtime-execution/pkg/endpoint/。
+
+      属于"触发路由"的文件（runtime-execution 侧）：
+      - server.go（核心工作流路由：/api/v1/workflows, /api/v1/instances）
+      - server_d3.go（审批、端点管理、审计日志路由）
+      - middleware_ratelimit.go（限流中间件）
+      - doc.go
+
+      具体操作：
+      1. 新建目录 runtime-execution/pkg/endpoint/http/
+      2. 复制上述文件，package 名改为 endpoint（原为 http，与标准库冲突，改为 endpoint）
+      3. 更新 import：
+         - interfaces → api "...runtime-execution/pkg/api"
+         - types → "...runtime-execution/internal/common/types"
+         - sysmanager 相关 import 全部删除（触发路由侧不依赖系统管理）
+      4. 新建 runtime-execution/pkg/endpoint/schedule/
+         复制 endpoint/schedule/cron.go
+         package 名保持 schedule
+      5. 原文件保留等待清理
+
+      注意：server.go 中的 sysMgr 字段和 jwtSecret 字段不迁移到触发路由侧
+    wave: 6
+    agent: gem-implementer
+    prototype: false
+    covers: [endpoint/http/server.go, endpoint/http/server_d3.go, endpoint/schedule/]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: [T08-refactor-engine]
+    conflicts_with: [T10-migrate-endpoint-mgmt]
+    context_files:
+      - path: endpoint/http/server.go
+        description: HTTP Server 结构体及工作流触发路由注册
+      - path: endpoint/http/server_d3.go
+        description: D3 审批/端点/审计路由
+      - path: endpoint/http/middleware_ratelimit.go
+        description: 限流中间件
+      - path: endpoint/schedule/cron.go
+        description: 定时调度端点
+    estimated_effort: medium
+    estimated_files: 3
+    estimated_lines: 200
+    focus_area: runtime-execution/pkg/endpoint/
+    verification:
+      - "go build github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/endpoint/..."
+      - "grep -r 'sysmanager\\|sysbuiltin' runtime-execution/pkg/endpoint/ # 必须无输出"
+    acceptance_criteria:
+      - 触发路由端点在新路径编译通过
+      - package 名为 endpoint（非 http）
+      - 无任何 sysmanager/sysbuiltin 相关 import
+      - Server 结构体只包含触发路由相关字段
+    failure_modes:
+      - scenario: server.go 中 Server 结构体同时含有管理字段和触发字段，拆分时遗漏字段
+        likelihood: high
+        impact: high
+        mitigation: >
+          迁移前列出 Server 所有字段，按路由归属分组：
+          触发侧保留 svc/approvalSvc/auditSvc/endpointSvc；
+          管理侧保留 sysMgr/jwtSecret/formSvc/advApprovalSvc/analyticsSvc/pluginSvc/oauthSvc
+    tech_stack: [Go 1.21+, gin]
+    test_coverage: null
+
+  - id: T10-migrate-endpoint-mgmt
+    title: 迁移管理路由到 config-management/backend/internal/handler/
+    description: |
+      从 endpoint/http/ 中提取系统管理路由（认证、用户、角色、菜单、权限、
+      OAuth、表单、高级审批、插件、统计），移至 config-management/backend/internal/handler/。
+
+      属于"管理路由"的文件（config-management 侧）：
+      - server_d4.go（认证、用户、角色、菜单、权限）
+      - server_d4_workflow.go（工作流管理相关管理路由）
+      - server_d5_template.go（模板管理）
+      - server_d6_approval.go（高级审批）
+      - server_d6_form.go（表单引擎）
+      - server_d6_oauth.go（OAuth 登录）
+      - server_d6_plugin.go（插件管理）
+      - server_d6_stats.go（BI 统计）
+
+      具体操作：
+      1. 新建目录 config-management/backend/internal/handler/
+      2. 复制上述文件，package 名改为 handler
+      3. 新建 handler/server.go（管理侧 Server 结构体，只含管理路由字段）：
+         - 字段：sysMgr, jwtSecret, formSvc, advApprovalSvc, analyticsSvc, pluginSvc, oauthSvc, templateSvc
+         - 注册所有管理路由
+      4. 更新 import：
+         - interfaces → api "...runtime-execution/pkg/api"
+         - types → "...runtime-execution/internal/common/types"
+         - jwtutil → "...runtime-execution/internal/common/jwtutil"
+         - sysmanager → "...config-management/backend/internal/..." (sysmanager 包迁移后路径)
+      5. 原文件保留等待清理
+    wave: 6
+    agent: gem-implementer
+    prototype: false
+    covers: [endpoint/http/server_d4.go, endpoint/http/server_d4_workflow.go, endpoint/http/server_d5_template.go, endpoint/http/server_d6_*.go]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: [T08-refactor-engine]
+    conflicts_with: [T09-migrate-endpoint-trigger]
+    context_files:
+      - path: endpoint/http/server_d4.go
+        description: 用户/角色/菜单/权限/认证路由
+      - path: endpoint/http/server_d4_workflow.go
+        description: 工作流管理 HTTP 路由
+      - path: endpoint/http/server_d5_template.go
+        description: 模板管理路由
+      - path: endpoint/http/server_d6_approval.go
+        description: 高级审批路由
+      - path: endpoint/http/server_d6_form.go
+        description: 表单引擎路由
+      - path: endpoint/http/server_d6_oauth.go
+        description: OAuth 路由
+      - path: endpoint/http/server_d6_plugin.go
+        description: 插件管理路由
+      - path: endpoint/http/server_d6_stats.go
+        description: BI 统计路由
+    estimated_effort: medium
+    estimated_files: 3
+    estimated_lines: 250
+    focus_area: config-management/backend/internal/handler/
+    verification:
+      - "go build github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/handler"
+    acceptance_criteria:
+      - 管理路由在新路径编译通过
+      - package 名为 handler
+      - handler 侧 Server 不含触发路由方法（registerRoutes 等）
+    failure_modes:
+      - scenario: server_d4.go 中使用了 jwtutil 包，迁移后 import 路径需要同步更新
+        likelihood: high
+        impact: medium
+        mitigation: jwtutil 在 Wave 1 T03 已迁移，此处直接使用新路径
+    tech_stack: [Go 1.21+, gin, JWT]
+    test_coverage: null
+
+  # ═══════════════════════════════════════════════════════════════════
+  # WAVE 7 — 系统管理层迁移 + 前端迁移
+  # ═══════════════════════════════════════════════════════════════════
+  - id: T11-migrate-sysmodel-sysmanager-sysrepo
+    title: 迁移 sysmodel/ sysmanager/ sysrepo/ 到 config-management/backend/internal/
+    description: |
+      迁移系统管理相关的类型定义、服务接口和仓储接口。
+
+      具体操作：
+      1. sysmodel/types.go →
+         config-management/backend/internal/sysmodel/types.go
+         package 名保持 sysmodel
+      2. sysmanager/interfaces.go →
+         config-management/backend/internal/sysmanager/interfaces.go
+         package 名保持 sysmanager
+      3. sysrepo/interfaces.go →
+         config-management/backend/internal/sysrepo/interfaces.go
+         package 名保持 sysrepo
+      4. 更新内部 import（sysmodel 相互引用等）
+      5. 原文件保留等待清理
+
+      注意：这三个包相互依赖，必须同步迁移，确保新路径下无循环依赖。
+    wave: 7
+    agent: gem-implementer
+    prototype: false
+    covers: [sysmodel/, sysmanager/, sysrepo/]
+    priority: medium
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: sysmodel/types.go
+        description: 系统管理数据模型（用户、角色、菜单等）
+      - path: sysmanager/interfaces.go
+        description: 系统管理服务聚合接口
+      - path: sysrepo/interfaces.go
+        description: 系统仓储接口（UserRepo、RoleRepo 等）
+    estimated_effort: small
+    estimated_files: 3
+    estimated_lines: 80
+    focus_area: config-management/backend/internal/
+    verification:
+      - "go build github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/sysmodel"
+      - "go build github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/sysmanager"
+      - "go build github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/sysrepo"
+    acceptance_criteria:
+      - sysmodel/sysmanager/sysrepo 三包在新路径编译通过
+      - 无循环依赖
+    failure_modes:
+      - scenario: sysmanager 引用了 sysmodel，sysrepo 也引用了 sysmodel，迁移后 import 路径版本不一致
+        likelihood: low
+        impact: medium
+        mitigation: 三个包在同一 Wave 同一 task 内迁移，统一使用新路径
+    tech_stack: [Go 1.21+]
+    test_coverage: null
+
+  - id: T12-migrate-sysbuiltin-syssqlserver
+    title: 迁移 sysbuiltin/ → service/ 和 syssqlserver/ → dao/
+    description: |
+      迁移系统管理的业务逻辑实现层和数据访问层。
+
+      具体操作：
+      1. sysbuiltin/*.go →
+         config-management/backend/internal/service/
+         package 名从 builtin 改为 service
+         受影响文件：
+         - auth_service.go, dict_service.go, manager.go
+         - menu_service.go, permission_service.go, role_service.go
+         - security_policy.go, user_service.go
+      2. syssqlserver/repository.go →
+         config-management/backend/internal/dao/repository.go
+         package 名从 syssqlserver 改为 dao
+      3. 更新所有 import：
+         - sysmodel → config-management/backend/internal/sysmodel
+         - sysmanager → config-management/backend/internal/sysmanager
+         - sysrepo → config-management/backend/internal/sysrepo
+      4. handler/server.go 中 service.NewManager() 的调用路径同步更新
+      5. 原文件保留等待清理
+
+      迁移后路径：
+      - github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/service
+      - github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/dao
+    wave: 7
+    agent: gem-implementer
+    prototype: false
+    covers: [sysbuiltin/, syssqlserver/]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: [T11-migrate-sysmodel-sysmanager-sysrepo]
+    conflicts_with: []
+    context_files:
+      - path: sysbuiltin/manager.go
+        description: 系统管理服务聚合体 NewManager()
+      - path: sysbuiltin/user_service.go
+        description: 用户服务实现
+      - path: sysbuiltin/auth_service.go
+        description: 认证服务实现
+      - path: syssqlserver/repository.go
+        description: 系统管理 SQL Server 仓储实现
+    estimated_effort: medium
+    estimated_files: 3
+    estimated_lines: 180
+    focus_area: config-management/backend/internal/
+    verification:
+      - "go build github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/service"
+      - "go build github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/dao"
+    acceptance_criteria:
+      - service 包（原 builtin）编译通过，package 名为 service
+      - dao 包（原 syssqlserver）编译通过，package 名为 dao
+      - 实现 sysrepo 接口（go vet 验证）
+    failure_modes:
+      - scenario: sysbuiltin/security_policy.go 有特殊加密逻辑，package 名变更影响 init 注册
+        likelihood: low
+        impact: medium
+        mitigation: 检查 security_policy.go 是否有 init()，若有则确保迁移后 init 在新包中执行
+    tech_stack: [Go 1.21+, SQL Server]
+    test_coverage: null
+
+  - id: T13-migrate-frontend
+    title: 整体移动 web/ → config-management/frontend/
+    description: |
+      将 Vue3 前端项目整体移动到新目录，不修改前端代码逻辑，
+      仅更新相关的 Dockerfile 引用路径和 docker-compose 中的构建路径。
+
+      具体操作：
+      1. 新建目录 config-management/frontend/
+      2. 将 web/ 目录下所有内容复制到 config-management/frontend/：
+         - src/（全部源码）
+         - public/（若存在）
+         - index.html
+         - package.json
+         - vite.config.ts
+         - tsconfig.json, tsconfig.node.json
+         - nginx.conf
+         - Dockerfile（更新 COPY 路径中的相对引用，若有）
+      3. 更新根目录 docker-compose.yml 中 web 服务的 context 路径：
+         从 ./web 改为 ./config-management/frontend
+      4. 原 web/ 保留等待清理
+
+      注意：vite.config.ts 和 package.json 禁止修改（AGENTS.md 规定），
+      只调整 docker-compose.yml 中的构建上下文路径。
+    wave: 7
+    agent: gem-implementer
+    prototype: false
+    covers: [web/]
+    priority: medium
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: web/Dockerfile
+        description: 前端 Docker 镜像构建文件
+      - path: docker-compose.yml
+        description: 服务编排文件，需更新 web 服务 context 路径
+    estimated_effort: small
+    estimated_files: 2
+    estimated_lines: 30
+    focus_area: config-management/frontend/
+    verification:
+      - "diff web/ config-management/frontend/ # 仅有 Dockerfile 路径差异"
+      - "docker-compose config # 验证 compose 语法正确"
+    acceptance_criteria:
+      - config-management/frontend/ 目录结构与原 web/ 完全一致
+      - docker-compose.yml 中 web 服务路径已更新
+      - vite.config.ts、package.json 内容未修改
+    failure_modes:
+      - scenario: Dockerfile 中使用了硬编码的相对路径，复制后失效
+        likelihood: low
+        impact: low
+        mitigation: 复制后检查 Dockerfile 的所有 COPY/ADD 指令
+    tech_stack: [Vue 3, Vite, TypeScript, Docker]
+    test_coverage: null
+
+  # ═══════════════════════════════════════════════════════════════════
+  # WAVE 8 — CMD 入口新建 + examples 更新
+  # ═══════════════════════════════════════════════════════════════════
+  - id: T14-create-cmd-stubs
+    title: 新建 cmd 入口骨架（config-management + runtime-execution）
+    description: |
+      新建三个 main.go 骨架，只包含组装逻辑，不含业务代码。
+
+      1. config-management/backend/cmd/api/main.go：
+         - 读取配置（DSN、Redis、JWT secret、gRPC addr）
+         - 创建 dao.NewSysRepository(cfg) → sysrepo.UserRepo/RoleRepo/MenuRepo/DictRepo
+         - 创建 service.NewManager(repos, authConfig)
+         - 创建 sqlserver.NewRepository(wfCfg) → api.WorkflowRepository
+         - 创建 handler.NewServer(wfRepo, sysMgr)
+         - 启动 HTTP 服务
+
+      2. runtime-execution/cmd/engine/main.go：
+         - 读取配置
+         - 创建 sqlserver.NewRepository(cfg) → api.WorkflowRepository
+         - 创建 redisRepo, redisClient
+         - engine.New(cfg, repo, redisRepo, redisClient)
+         - 注册端点：endpoint.NewServer(engine.WorkflowService())
+         - 启动 gRPC + HTTP
+
+      3. runtime-execution/cmd/worker/main.go：
+         - 读取配置（Nacos 地址、支持的节点类型）
+         - 注册内置执行器 node.RegisterBuiltin()
+         - worker.New(cfg).Start()
+
+      每个 main.go 仅约 50-80 行，作为依赖注入的组装点。
+    wave: 8
+    agent: gem-implementer
+    prototype: false
+    covers: []
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: [T08-refactor-engine, T10-migrate-endpoint-mgmt, T12-migrate-sysbuiltin-syssqlserver, T07-migrate-worker]
+    conflicts_with: []
+    context_files:
+      - path: engine/engine.go
+        description: Engine.New() 函数签名参照
+      - path: worker/worker.go
+        description: Worker 启动逻辑参照
+    estimated_effort: medium
+    estimated_files: 3
+    estimated_lines: 200
+    focus_area: config-management/backend/cmd/ 和 runtime-execution/cmd/
+    verification:
+      - "go build github.com/zhiyunliu/distributed-workflow/config-management/backend/cmd/api"
+      - "go build github.com/zhiyunliu/distributed-workflow/runtime-execution/cmd/engine"
+      - "go build github.com/zhiyunliu/distributed-workflow/runtime-execution/cmd/worker"
+    acceptance_criteria:
+      - 三个 main.go 均可编译通过
+      - main.go 中只有组装/配置读取逻辑，无业务代码
+      - Engine 的 sqlserver.NewRepository 调用只出现在 cmd/engine/main.go 中
+    failure_modes:
+      - scenario: cmd/engine/main.go 中需要直接 import storage/sqlserver，绕过了依赖倒置
+        likelihood: low
+        impact: low
+        mitigation: >
+          cmd 层的职责就是做依赖组装（Composition Root），
+          允许在 main.go 中 import 具体实现，这不违反依赖倒置原则
+    tech_stack: [Go 1.21+]
+    test_coverage: null
+
+  - id: T15-update-examples
+    title: 更新 examples/ 中的 import 路径
+    description: |
+      将 examples/ 下所有示例代码的 import 路径更新为新目录结构。
+
+      受影响目录：
+      - examples/serial/main.go
+      - examples/branch/main.go（若存在）
+      - examples/parallel/main.go（若存在）
+
+      更新规则：
+      - github.com/zhiyunliu/distributed-workflow/types →
+        github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types
+      - github.com/zhiyunliu/distributed-workflow/interfaces →
+        github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api
+      - github.com/zhiyunliu/distributed-workflow/engine →
+        github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/engine
+      - github.com/zhiyunliu/distributed-workflow/storage/sqlserver →
+        github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/storage/sqlserver
+      - 其他包按对应迁移表更新
+
+      示例代码逻辑不做修改，只更新 import 路径。
+    wave: 8
+    agent: gem-implementer
+    prototype: false
+    covers: [examples/]
+    priority: medium
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: [T08-refactor-engine, T05-migrate-storage-sqlserver]
+    conflicts_with: []
+    context_files:
+      - path: examples/serial/main.go
+        description: 串行工作流示例
+      - path: examples/parallel/
+        description: 并行工作流示例
+      - path: examples/branch/
+        description: 分支工作流示例
+    estimated_effort: small
+    estimated_files: 3
+    estimated_lines: 60
+    focus_area: examples/
+    verification:
+      - "go build github.com/zhiyunliu/distributed-workflow/examples/..."
+    acceptance_criteria:
+      - examples 目录下所有示例可编译通过
+      - 无旧 import 路径残留
+    failure_modes:
+      - scenario: examples 依赖了多个已迁移包，若有遗漏则编译报 undefined
+        likelihood: medium
+        impact: low
+        mitigation: 编译报错后按错误信息逐个修正 import，不影响主干迁移进度
+    tech_stack: [Go 1.21+]
+    test_coverage: "go build ./examples/..."
+
+  # ═══════════════════════════════════════════════════════════════════
+  # WAVE 9 — 全量验证 + 旧文件清理标记
+  # ═══════════════════════════════════════════════════════════════════
+  - id: T16-final-validation
+    title: 全量编译验证 + import 路径审查 + 清理标记
+    description: |
+      对整个项目执行最终编译验证，确认所有旧 import 路径已清除，
+      并生成旧文件清理清单（不实际删除，由人工确认后执行）。
+
+      具体操作：
+      1. 执行 go build ./... 并记录所有错误
+      2. 执行 go vet ./... 检查代码质量
+      3. 执行以下检查，输出必须为空：
+         grep -r '"github.com/zhiyunliu/distributed-workflow/engine"' \
+           --include="*.go" \
+           --exclude-dir=".git" .
+         （排除旧引擎包引用，新路径为 runtime-execution/internal/engine）
+      4. 类似检查 interfaces、storage/sqlserver、sysbuiltin 等旧路径
+      5. 生成 docs/plan/20260428-project-restructure/cleanup-checklist.md：
+         列出所有可安全删除的旧目录/文件（dag/, engine/, endpoint/, interfaces/,
+         jwtutil/, plugin/, proto/, rpc/, registry/, storage/, sysbuiltin/,
+         sysmanager/, sysmodel/, sysrepo/, syssqlserver/, types/, web/）
+      6. 不实际执行删除，等待人工确认
+
+      此任务为纯验证 + 文档任务，零代码修改。
+    wave: 9
+    agent: gem-implementer
+    prototype: false
+    covers: [全部迁移后代码]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: [T14-create-cmd-stubs, T15-update-examples, T13-migrate-frontend, T09-migrate-endpoint-trigger, T10-migrate-endpoint-mgmt]
+    conflicts_with: []
+    context_files: []
+    estimated_effort: small
+    estimated_files: 1
+    estimated_lines: 80
+    focus_area: 根目录
+    verification:
+      - "go build ./... # 零错误"
+      - "go vet ./... # 零警告"
+    acceptance_criteria:
+      - go build ./... 零错误通过
+      - go vet ./... 零 warning
+      - 旧包路径 grep 检查全部为空输出（新代码中无旧路径引用）
+      - cleanup-checklist.md 已生成
+    failure_modes:
+      - scenario: 部分文件仍在旧路径但被新代码引用（新旧混用）
+        likelihood: medium
+        impact: medium
+        mitigation: grep 精确定位后回溯到对应 Wave 的任务修复，不在本任务修改代码
+    tech_stack: [Go 1.21+]
+    test_coverage: "go test ./..."

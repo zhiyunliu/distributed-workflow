@@ -77,7 +77,7 @@ services:
   # ── 前端（Nginx + Vue3 静态文件）────────────────────────────────────────
   frontend:
     build:
-      context: ./web
+      context: ./config-management/frontend
       dockerfile: Dockerfile
     container_name: workflow-frontend
     restart: unless-stopped

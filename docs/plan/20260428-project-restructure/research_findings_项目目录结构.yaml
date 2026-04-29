@@ -1,0 +1,1589 @@
+plan_id: 20260428-project-restructure
+objective: 分析 distributed-workflow 项目当前代码结构，为制定详细文件迁移计划提供基础
+focus_area: 项目目录结构、包依赖关系、go.mod 内容、前端代码位置
+created_at: "2026-04-28"
+created_by: RESEARCHER
+status: completed
+
+tldr:
+  - 当前项目为单 Go 模块 (github.com/zhiyunliu/distributed-workflow)，所有包平铺在根目录
+  - 核心依赖层次：types/proto → interfaces → engine/worker/storage → endpoint → examples
+  - 前端代码位于 web/，含完整 Vue3+Vite+TypeScript+Element Plus 项目，需整体迁移
+  - engine 包直接 import storage/sqlserver 和 endpoint/schedule，是最重依赖包
+  - 迁移到多子模块结构时，最大挑战是拆分 go.mod 并重写所有 import 路径
+
+research_metadata:
+  methodology: "list_dir + grep_search(import 扫描) + read_file(关键文件头部)"
+  scope: "全项目所有 .go 文件及前端 package.json"
+  confidence: high
+  coverage: 95
+  decision_blockers: 2
+  research_blockers: 0
+
+# ─────────────────────────────────────────────────
+# 一、完整当前文件列表
+# ─────────────────────────────────────────────────
+files_analyzed:
+
+  # 根目录文件
+  - file: go.mod
+    path: go.mod
+    purpose: "Go 模块声明，模块名 github.com/zhiyunliu/distributed-workflow，go 1.25.7"
+    key_elements:
+      - element: module_name
+        type: variable
+        location: "go.mod:1"
+        description: "github.com/zhiyunliu/distributed-workflow"
+        language: go
+    lines: 80
+
+  - file: go.sum
+    path: go.sum
+    purpose: 依赖锁文件
+    key_elements: []
+    lines: ~300
+
+  - file: Makefile
+    path: Makefile
+    purpose: 构建脚本
+    key_elements: []
+    lines: 30
+
+  - file: Dockerfile
+    path: Dockerfile
+    purpose: 容器镜像构建
+    key_elements: []
+    lines: 20
+
+  - file: docker-compose.yml
+    path: docker-compose.yml
+    purpose: 本地开发编排
+    key_elements: []
+    lines: 40
+
+  # dag/ ─────────────────────────────────────────
+  - file: dag.go
+    path: dag/dag.go
+    purpose: 有向无环图核心算法，无项目内依赖（纯算法包）
+    key_elements:
+      - element: DAG
+        type: class
+        location: "dag/dag.go:~15"
+        description: 拓扑排序与并行执行分层
+        language: go
+    lines: ~150
+
+  - file: dag_test.go
+    path: dag/dag_test.go
+    purpose: dag 单元测试
+    key_elements: []
+    lines: ~80
+
+  - file: doc.go
+    path: dag/doc.go
+    purpose: 包文档
+    key_elements: []
+    lines: 3
+
+  # endpoint/http/ ───────────────────────────────
+  - file: server.go
+    path: endpoint/http/server.go
+    purpose: "HTTP Server 结构体定义与初始化；依赖 interfaces、sysmanager、types"
+    key_elements:
+      - element: Server
+        type: class
+        location: "endpoint/http/server.go:14"
+        description: gin HTTP 服务器，聚合所有 D3~D6 服务
+        language: go
+    lines: ~80
+
+  - file: server_d3.go
+    path: endpoint/http/server_d3.go
+    purpose: D3 阶段路由（工作流、实例、审批、审计）
+    key_elements: []
+    lines: ~120
+
+  - file: server_d4.go
+    path: endpoint/http/server_d4.go
+    purpose: "D4 路由（认证、用户、角色、菜单、字典）；依赖 jwtutil、sysmanager、sysmodel"
+    key_elements: []
+    lines: ~200
+
+  - file: server_d4_workflow.go
+    path: endpoint/http/server_d4_workflow.go
+    purpose: D4 工作流管理路由
+    key_elements: []
+    lines: ~80
+
+  - file: server_d5_template.go
+    path: endpoint/http/server_d5_template.go
+    purpose: D5 模板管理路由
+    key_elements: []
+    lines: ~60
+
+  - file: server_d6_approval.go
+    path: endpoint/http/server_d6_approval.go
+    purpose: D6 高级审批路由
+    key_elements: []
+    lines: ~80
+
+  - file: server_d6_form.go
+    path: endpoint/http/server_d6_form.go
+    purpose: D6 表单引擎路由
+    key_elements: []
+    lines: ~80
+
+  - file: server_d6_oauth.go
+    path: endpoint/http/server_d6_oauth.go
+    purpose: D6 OAuth 登录路由
+    key_elements: []
+    lines: ~60
+
+  - file: server_d6_plugin.go
+    path: endpoint/http/server_d6_plugin.go
+    purpose: D6 插件管理路由
+    key_elements: []
+    lines: ~60
+
+  - file: server_d6_stats.go
+    path: endpoint/http/server_d6_stats.go
+    purpose: D6 BI 统计路由
+    key_elements: []
+    lines: ~60
+
+  - file: middleware_ratelimit.go
+    path: endpoint/http/middleware_ratelimit.go
+    purpose: 限流中间件（D3新增）
+    key_elements: []
+    lines: ~40
+
+  - file: doc.go
+    path: endpoint/http/doc.go
+    purpose: 包文档
+    key_elements: []
+    lines: 3
+
+  # endpoint/schedule/ ───────────────────────────
+  - file: cron.go
+    path: endpoint/schedule/cron.go
+    purpose: "定时触发端点；被 engine/schedule_manager.go 直接 import"
+    key_elements:
+      - element: CronEndpoint
+        type: class
+        location: "endpoint/schedule/cron.go:~10"
+        description: 定时任务调度端点
+        language: go
+    lines: ~80
+
+  # engine/ ──────────────────────────────────────
+  - file: engine.go
+    path: engine/engine.go
+    purpose: "Engine 主结构体，组装所有子服务；依赖 interfaces、plugin、rpc、storage/sqlserver"
+    key_elements:
+      - element: Engine
+        type: class
+        location: "engine/engine.go:40"
+        description: 工作流引擎核心，管理全生命周期
+        language: go
+    lines: ~200
+
+  - file: scheduler.go
+    path: engine/scheduler.go
+    purpose: "DAG 调度器；依赖 storage/redis、dag、interfaces、types"
+    key_elements: []
+    lines: ~200
+
+  - file: schedule_manager.go
+    path: engine/schedule_manager.go
+    purpose: "定时调度管理；依赖 endpoint/schedule（！跨层依赖）"
+    key_elements: []
+    lines: ~80
+
+  - file: server.go
+    path: engine/server.go
+    purpose: "gRPC 服务端实现；依赖 interfaces、proto、types"
+    key_elements: []
+    lines: ~100
+
+  - file: worker_manager.go
+    path: engine/worker_manager.go
+    purpose: "Worker 注册与心跳管理；依赖 interfaces、rpc、types"
+    key_elements: []
+    lines: ~120
+
+  - file: workflow_service.go
+    path: engine/workflow_service.go
+    purpose: 工作流 CRUD 及实例管理业务逻辑
+    key_elements: []
+    lines: ~200
+
+  - file: approval_service.go
+    path: engine/approval_service.go
+    purpose: 基础审批服务实现
+    key_elements: []
+    lines: ~120
+
+  - file: advanced_approval_service.go
+    path: engine/advanced_approval_service.go
+    purpose: D6 高级审批（多级、会签、顺序）
+    key_elements: []
+    lines: ~200
+
+  - file: analytics_service.go
+    path: engine/analytics_service.go
+    purpose: D6 BI 统计服务
+    key_elements: []
+    lines: ~150
+
+  - file: audit_log_manager.go
+    path: engine/audit_log_manager.go
+    purpose: 审计日志管理
+    key_elements: []
+    lines: ~100
+
+  - file: callback_manager.go
+    path: engine/callback_manager.go
+    purpose: 回调通知管理
+    key_elements: []
+    lines: ~100
+
+  - file: context_manager.go
+    path: engine/context_manager.go
+    purpose: 流程上下文管理
+    key_elements: []
+    lines: ~80
+
+  - file: endpoint_manager.go
+    path: engine/endpoint_manager.go
+    purpose: 端点生命周期管理
+    key_elements: []
+    lines: ~80
+
+  - file: error_handler.go
+    path: engine/error_handler.go
+    purpose: 错误处理与重试策略
+    key_elements: []
+    lines: ~80
+
+  - file: failover_manager.go
+    path: engine/failover_manager.go
+    purpose: "Worker 故障转移；依赖 interfaces、rpc、types"
+    key_elements: []
+    lines: ~100
+
+  - file: form_service.go
+    path: engine/form_service.go
+    purpose: D6 表单引擎服务实现
+    key_elements: []
+    lines: ~150
+
+  - file: instance_state.go
+    path: engine/instance_state.go
+    purpose: 实例状态机管理
+    key_elements: []
+    lines: ~100
+
+  - file: lifecycle_manager.go
+    path: engine/lifecycle_manager.go
+    purpose: 实例生命周期（暂停/恢复/取消）
+    key_elements: []
+    lines: ~80
+
+  - file: oauth_service.go
+    path: engine/oauth_service.go
+    purpose: D6 OAuth 服务实现
+    key_elements: []
+    lines: ~150
+
+  - file: plugin_service.go
+    path: engine/plugin_service.go
+    purpose: "D6 插件服务；依赖 interfaces、plugin、types"
+    key_elements: []
+    lines: ~100
+
+  - file: subflow_manager.go
+    path: engine/subflow_manager.go
+    purpose: 子流程管理
+    key_elements: []
+    lines: ~80
+
+  - file: template_service.go
+    path: engine/template_service.go
+    purpose: D5 模板服务实现
+    key_elements: []
+    lines: ~150
+
+  - file: version_manager.go
+    path: engine/version_manager.go
+    purpose: D2 版本管理实现
+    key_elements: []
+    lines: ~120
+
+  - file: worker_manager_test.go
+    path: engine/worker_manager_test.go
+    purpose: worker_manager 单元测试
+    key_elements: []
+    lines: ~60
+
+  # interfaces/ ──────────────────────────────────
+  - file: components.go
+    path: interfaces/components.go
+    purpose: "NodeExecutor、NodeExecutorContainer、TaskExecutionManager 接口"
+    key_elements: []
+    lines: ~80
+
+  - file: services.go
+    path: interfaces/services.go
+    purpose: "WorkflowService、ApprovalService、AuditLogService 等核心服务接口"
+    key_elements: []
+    lines: ~120
+
+  - file: repository.go
+    path: interfaces/repository.go
+    purpose: WorkflowRepository 存储层接口
+    key_elements: []
+    lines: ~60
+
+  - file: form_service.go
+    path: interfaces/form_service.go
+    purpose: D6 FormService 接口
+    key_elements: []
+    lines: ~40
+
+  - file: form_repository.go
+    path: interfaces/form_repository.go
+    purpose: D6 FormRepository 接口
+    key_elements: []
+    lines: ~40
+
+  - file: approval_service_d6.go
+    path: interfaces/approval_service_d6.go
+    purpose: D6 AdvancedApprovalService 接口
+    key_elements: []
+    lines: ~40
+
+  - file: analytics_service.go
+    path: interfaces/analytics_service.go
+    purpose: D6 AnalyticsService 接口
+    key_elements: []
+    lines: ~40
+
+  - file: oauth_service.go
+    path: interfaces/oauth_service.go
+    purpose: D6 OAuthService 接口
+    key_elements: []
+    lines: ~30
+
+  - file: plugin_service.go
+    path: interfaces/plugin_service.go
+    purpose: D6 PluginService 接口
+    key_elements: []
+    lines: ~30
+
+  - file: doc.go
+    path: interfaces/doc.go
+    purpose: 包文档
+    key_elements: []
+    lines: 3
+
+  # jwtutil/ ─────────────────────────────────────
+  - file: jwt.go
+    path: jwtutil/jwt.go
+    purpose: "HS256 JWT 工具（无项目内依赖，纯标准库实现）"
+    key_elements:
+      - element: Claims
+        type: class
+        location: "jwtutil/jwt.go:27"
+        description: JWT payload 结构
+        language: go
+    lines: ~100
+
+  # plugin/ ──────────────────────────────────────
+  - file: registry.go
+    path: plugin/registry.go
+    purpose: "插件注册表（无项目内依赖）"
+    key_elements: []
+    lines: ~60
+
+  - file: sdk.go
+    path: plugin/sdk.go
+    purpose: "Plugin 接口定义；依赖 types"
+    key_elements:
+      - element: Plugin
+        type: class
+        location: "plugin/sdk.go:~5"
+        description: 插件 SDK 接口
+        language: go
+    lines: ~40
+
+  - file: doc.go
+    path: plugin/doc.go
+    purpose: 包文档
+    key_elements: []
+    lines: 3
+
+  # proto/ ───────────────────────────────────────
+  - file: workflow.proto
+    path: proto/workflow.proto
+    purpose: gRPC 协议定义源文件
+    key_elements: []
+    lines: ~80
+
+  - file: workflow.pb.go
+    path: proto/workflow.pb.go
+    purpose: protobuf 生成代码（消息）
+    key_elements: []
+    lines: ~300
+
+  - file: workflow_grpc.pb.go
+    path: proto/workflow_grpc.pb.go
+    purpose: gRPC 服务端/客户端生成代码
+    key_elements: []
+    lines: ~150
+
+  - file: workflow_d2.go
+    path: proto/workflow_d2.go
+    purpose: D2 新增 proto 消息（手写扩展）
+    key_elements: []
+    lines: ~60
+
+  # registry/nacos/ ──────────────────────────────
+  - file: registry.go
+    path: registry/nacos/registry.go
+    purpose: "Nacos 服务注册实现；依赖 types"
+    key_elements: []
+    lines: ~80
+
+  - file: doc.go
+    path: registry/nacos/doc.go
+    purpose: 包文档
+    key_elements: []
+    lines: 3
+
+  # rpc/ ─────────────────────────────────────────
+  - file: engine_client.go
+    path: rpc/engine_client.go
+    purpose: "Engine gRPC 客户端（Worker 使用）；依赖 proto、types"
+    key_elements: []
+    lines: ~100
+
+  - file: worker_client.go
+    path: rpc/worker_client.go
+    purpose: "Worker gRPC 客户端（Engine 使用）；依赖 proto、types"
+    key_elements: []
+    lines: ~100
+
+  - file: doc.go
+    path: rpc/doc.go
+    purpose: 包文档
+    key_elements: []
+    lines: 3
+
+  # storage/redis/ ───────────────────────────────
+  - file: client.go
+    path: storage/redis/client.go
+    purpose: Redis 连接管理
+    key_elements: []
+    lines: ~40
+
+  - file: queue.go
+    path: storage/redis/queue.go
+    purpose: "任务队列实现；依赖 types"
+    key_elements: []
+    lines: ~100
+
+  - file: lock.go
+    path: storage/redis/lock.go
+    purpose: 分布式锁实现
+    key_elements: []
+    lines: ~60
+
+  - file: doc.go
+    path: storage/redis/doc.go
+    purpose: 包文档
+    key_elements: []
+    lines: 3
+
+  # storage/sqlserver/ ───────────────────────────
+  - file: repository.go
+    path: storage/sqlserver/repository.go
+    purpose: "WorkflowRepository SQL Server 主实现；依赖 types（无 interfaces 依赖！）"
+    key_elements:
+      - element: Repository
+        type: class
+        location: "storage/sqlserver/repository.go:36"
+        description: 工作流数据仓储
+        language: go
+    lines: ~400
+
+  - file: template_repository.go
+    path: storage/sqlserver/template_repository.go
+    purpose: D5 模板数据仓储实现
+    key_elements: []
+    lines: ~150
+
+  - file: form_repository.go
+    path: storage/sqlserver/form_repository.go
+    purpose: D6 表单数据仓储实现
+    key_elements: []
+    lines: ~200
+
+  - file: analytics_repository.go
+    path: storage/sqlserver/analytics_repository.go
+    purpose: D6 统计数据仓储实现
+    key_elements: []
+    lines: ~150
+
+  - file: approval_repository_d6.go
+    path: storage/sqlserver/approval_repository_d6.go
+    purpose: D6 高级审批数据仓储实现
+    key_elements: []
+    lines: ~150
+
+  - file: oauth_repository.go
+    path: storage/sqlserver/oauth_repository.go
+    purpose: D6 OAuth 数据仓储实现
+    key_elements: []
+    lines: ~100
+
+  - file: plugin_repository.go
+    path: storage/sqlserver/plugin_repository.go
+    purpose: D6 插件数据仓储实现
+    key_elements: []
+    lines: ~100
+
+  - file: schema.sql
+    path: storage/sqlserver/schema.sql
+    purpose: D1 基础数据库 DDL
+    key_elements: []
+    lines: ~80
+
+  - file: schema_d2.sql
+    path: storage/sqlserver/schema_d2.sql
+    purpose: D2 增量 DDL（版本管理表）
+    key_elements: []
+    lines: ~40
+
+  - file: schema_d3.sql
+    path: storage/sqlserver/schema_d3.sql
+    purpose: D3 增量 DDL（审计日志表）
+    key_elements: []
+    lines: ~30
+
+  - file: schema_d4.sql
+    path: storage/sqlserver/schema_d4.sql
+    purpose: D4 增量 DDL（用户/角色/菜单/字典表）
+    key_elements: []
+    lines: ~60
+
+  - file: schema_d5.sql
+    path: storage/sqlserver/schema_d5.sql
+    purpose: D5 增量 DDL（模板表）
+    key_elements: []
+    lines: ~30
+
+  - file: schema_d6.sql
+    path: storage/sqlserver/schema_d6.sql
+    purpose: D6 增量 DDL（表单/插件/OAuth/统计表）
+    key_elements: []
+    lines: ~80
+
+  - file: doc.go
+    path: storage/sqlserver/doc.go
+    purpose: 包文档
+    key_elements: []
+    lines: 3
+
+  # sysbuiltin/ ──────────────────────────────────
+  - file: manager.go
+    path: sysbuiltin/manager.go
+    purpose: "系统管理服务聚合入口；依赖 sysmanager、sysmodel、sysrepo"
+    key_elements:
+      - element: NewManager
+        type: function
+        location: "sysbuiltin/manager.go:20"
+        description: 创建内置系统管理 Manager
+        language: go
+    lines: ~40
+
+  - file: auth_service.go
+    path: sysbuiltin/auth_service.go
+    purpose: "认证服务（JWT 签发/验证）；依赖 jwtutil、sysmanager、sysmodel、sysrepo"
+    key_elements: []
+    lines: ~100
+
+  - file: user_service.go
+    path: sysbuiltin/user_service.go
+    purpose: 用户 CRUD 业务逻辑
+    key_elements: []
+    lines: ~120
+
+  - file: role_service.go
+    path: sysbuiltin/role_service.go
+    purpose: 角色 CRUD 业务逻辑
+    key_elements: []
+    lines: ~80
+
+  - file: menu_service.go
+    path: sysbuiltin/menu_service.go
+    purpose: 菜单管理业务逻辑
+    key_elements: []
+    lines: ~80
+
+  - file: permission_service.go
+    path: sysbuiltin/permission_service.go
+    purpose: 权限校验业务逻辑
+    key_elements: []
+    lines: ~80
+
+  - file: dict_service.go
+    path: sysbuiltin/dict_service.go
+    purpose: 数据字典业务逻辑
+    key_elements: []
+    lines: ~80
+
+  - file: security_policy.go
+    path: sysbuiltin/security_policy.go
+    purpose: 安全策略（密码规则等）
+    key_elements: []
+    lines: ~60
+
+  # sysmanager/ ──────────────────────────────────
+  - file: interfaces.go
+    path: sysmanager/interfaces.go
+    purpose: "系统管理 Manager/各 Service 接口定义；依赖 sysmodel"
+    key_elements:
+      - element: Manager
+        type: class
+        location: "sysmanager/interfaces.go:~10"
+        description: 系统管理服务聚合接口
+        language: go
+    lines: ~80
+
+  # sysmodel/ ────────────────────────────────────
+  - file: types.go
+    path: sysmodel/types.go
+    purpose: "系统管理数据模型（User、Role、Menu、Dict、AuthConfig）；无项目内依赖"
+    key_elements: []
+    lines: ~100
+
+  # sysrepo/ ─────────────────────────────────────
+  - file: interfaces.go
+    path: sysrepo/interfaces.go
+    purpose: "系统管理数据层接口（UserRepo、RoleRepo、MenuRepo、DictRepo）；依赖 sysmodel"
+    key_elements: []
+    lines: ~60
+
+  # syssqlserver/ ────────────────────────────────
+  - file: repository.go
+    path: syssqlserver/repository.go
+    purpose: "系统管理 SQL Server 实现；依赖 sysmodel、sysrepo"
+    key_elements:
+      - element: DB
+        type: class
+        location: "syssqlserver/repository.go:17"
+        description: 包装 *sql.DB，提供各 Repo 工厂方法
+        language: go
+    lines: ~400
+
+  # types/ ───────────────────────────────────────
+  - file: types.go
+    path: types/types.go
+    purpose: "核心业务数据模型（WorkflowDef、WorkflowInstance、WorkflowContext 等）；无项目内依赖"
+    key_elements:
+      - element: WorkflowContext
+        type: class
+        location: "types/types.go:~50"
+        description: 流程执行上下文
+        language: go
+    lines: ~200
+
+  - file: analytics_types.go
+    path: types/analytics_types.go
+    purpose: D6 统计相关数据模型
+    key_elements: []
+    lines: ~60
+
+  - file: approval_types_d6.go
+    path: types/approval_types_d6.go
+    purpose: D6 高级审批数据模型
+    key_elements: []
+    lines: ~80
+
+  - file: form_types.go
+    path: types/form_types.go
+    purpose: D6 表单数据模型
+    key_elements: []
+    lines: ~80
+
+  - file: oauth_types.go
+    path: types/oauth_types.go
+    purpose: D6 OAuth 数据模型
+    key_elements: []
+    lines: ~50
+
+  - file: plugin_types.go
+    path: types/plugin_types.go
+    purpose: D6 插件数据模型
+    key_elements: []
+    lines: ~60
+
+  - file: doc.go
+    path: types/doc.go
+    purpose: 包文档
+    key_elements: []
+    lines: 3
+
+  # worker/ ──────────────────────────────────────
+  - file: worker.go
+    path: worker/worker.go
+    purpose: "NodeWorker 主结构体；依赖 interfaces、rpc"
+    key_elements:
+      - element: NodeWorker
+        type: class
+        location: "worker/worker.go:34"
+        description: 分布式执行节点
+        language: go
+    lines: ~120
+
+  - file: server.go
+    path: worker/server.go
+    purpose: "Worker gRPC 服务端；依赖 interfaces、proto、types"
+    key_elements: []
+    lines: ~80
+
+  - file: task_manager.go
+    path: worker/task_manager.go
+    purpose: "任务执行管理器；依赖 interfaces、types、worker/executors"
+    key_elements: []
+    lines: ~120
+
+  - file: executor_container.go
+    path: worker/executor_container.go
+    purpose: "执行器容器实现；依赖 interfaces"
+    key_elements: []
+    lines: ~60
+
+  - file: executor_container_test.go
+    path: worker/executor_container_test.go
+    purpose: 执行器容器单元测试
+    key_elements: []
+    lines: ~40
+
+  - file: doc.go
+    path: worker/doc.go
+    purpose: 包文档
+    key_elements: []
+    lines: 3
+
+  # worker/executors/ ────────────────────────────
+  - file: builtin.go
+    path: worker/executors/builtin.go
+    purpose: "内置 log/sleep 执行器；依赖 types"
+    key_elements: []
+    lines: ~60
+
+  - file: http.go
+    path: worker/executors/http.go
+    purpose: "HTTP 节点执行器；依赖 types"
+    key_elements: []
+    lines: ~80
+
+  - file: human_task.go
+    path: worker/executors/human_task.go
+    purpose: "人工任务执行器，返回 ErrNodeWaiting；依赖 types"
+    key_elements: []
+    lines: ~40
+
+  - file: executors_test.go
+    path: worker/executors/executors_test.go
+    purpose: 执行器单元测试
+    key_elements: []
+    lines: ~60
+
+  # examples/ ────────────────────────────────────
+  - file: branch/main.go
+    path: examples/branch/main.go
+    purpose: "分支流程示例；依赖 endpoint/http、engine、storage/redis、storage/sqlserver、types、worker、worker/executors"
+    key_elements: []
+    lines: ~120
+
+  - file: parallel/main.go
+    path: examples/parallel/main.go
+    purpose: 并行流程示例（同上依赖）
+    key_elements: []
+    lines: ~120
+
+  - file: serial/main.go
+    path: examples/serial/main.go
+    purpose: 串行流程示例（同上依赖）
+    key_elements: []
+    lines: ~120
+
+  # web/ ─────────────────────────────────────────
+  - file: package.json
+    path: web/package.json
+    purpose: "前端项目描述；Vue3+Vite+TypeScript+ElementPlus+LogicFlow+Pinia"
+    key_elements:
+      - element: name
+        type: variable
+        location: "web/package.json:2"
+        description: "distributed-workflow-web"
+        language: json
+    lines: 30
+
+  - file: vite.config.ts
+    path: web/vite.config.ts
+    purpose: Vite 构建配置
+    key_elements: []
+    lines: ~30
+
+  - file: tsconfig.json
+    path: web/tsconfig.json
+    purpose: TypeScript 配置
+    key_elements: []
+    lines: ~20
+
+  - file: tsconfig.node.json
+    path: web/tsconfig.node.json
+    purpose: Node 环境 TypeScript 配置
+    key_elements: []
+    lines: ~10
+
+  - file: index.html
+    path: web/index.html
+    purpose: 应用入口 HTML
+    key_elements: []
+    lines: ~15
+
+  - file: nginx.conf
+    path: web/nginx.conf
+    purpose: 生产环境 nginx 配置
+    key_elements: []
+    lines: ~30
+
+  - file: Dockerfile
+    path: web/Dockerfile
+    purpose: 前端容器镜像构建
+    key_elements: []
+    lines: ~20
+
+  # web/src/ 前端源码
+  - file: "src/main.ts"
+    path: web/src/main.ts
+    purpose: Vue 应用入口
+    key_elements: []
+    lines: ~20
+
+  - file: "src/App.vue"
+    path: web/src/App.vue
+    purpose: 根组件
+    key_elements: []
+    lines: ~10
+
+  - file: "src/layouts/MainLayout.vue"
+    path: web/src/layouts/MainLayout.vue
+    purpose: 主布局（侧边栏+顶部导航）
+    key_elements: []
+    lines: ~80
+
+  - file: "src/router/index.ts"
+    path: web/src/router/index.ts
+    purpose: Vue Router 路由配置（懒加载）
+    key_elements: []
+    lines: ~80
+
+  - file: "src/stores/auth.ts"
+    path: web/src/stores/auth.ts
+    purpose: Pinia 认证状态管理
+    key_elements: []
+    lines: ~60
+
+  - file: "src/utils/request.ts"
+    path: web/src/utils/request.ts
+    purpose: Axios 封装（含 JWT 拦截器）
+    key_elements: []
+    lines: ~60
+
+  # web/src/api/ - 15 个 API 封装文件
+  - file: "src/api/workflow.ts"
+    path: web/src/api/workflow.ts
+    purpose: 工作流 CRUD API
+    key_elements: []
+    lines: ~40
+
+  - file: "src/api/instance.ts"
+    path: web/src/api/instance.ts
+    purpose: 流程实例 API
+    key_elements: []
+    lines: ~40
+
+  - file: "src/api/approval.ts / advanced_approval.ts"
+    path: web/src/api/
+    purpose: 审批相关 API
+    key_elements: []
+    lines: ~60
+
+  - file: "src/api/template.ts"
+    path: web/src/api/template.ts
+    purpose: 模板 API
+    key_elements: []
+    lines: ~30
+
+  - file: "src/api/form.ts"
+    path: web/src/api/form.ts
+    purpose: 表单引擎 API
+    key_elements: []
+    lines: ~40
+
+  - file: "src/api/plugin.ts"
+    path: web/src/api/plugin.ts
+    purpose: 插件管理 API
+    key_elements: []
+    lines: ~30
+
+  - file: "src/api/analytics.ts"
+    path: web/src/api/analytics.ts
+    purpose: 统计 API
+    key_elements: []
+    lines: ~30
+
+  - file: "其他 api：auth.ts / user.ts / role.ts / menu.ts / dict.ts / audit.ts / endpoint.ts"
+    path: web/src/api/
+    purpose: 系统管理及辅助 API
+    key_elements: []
+    lines: ~200
+
+  # web/src/views/ 视图（26 个 .vue 文件）
+  # 主要目录：workflow/ instance/ approval/ audit/ endpoint/ template/ system/
+  # 独立视图：Login.vue FormDesigner.vue FormList.vue InstalledPlugins.vue PluginMarket.vue
+  #           AnalyticsDashboard.vue ApprovalReport.vue
+  - file: "src/views/..."
+    path: web/src/views/
+    purpose: 全部页面视图
+    key_elements: []
+    lines: ~2000
+
+  - file: "src/components/FormComponents.vue"
+    path: web/src/components/FormComponents.vue
+    purpose: 公共表单组件
+    key_elements: []
+    lines: ~100
+
+  # web/src/types/ - 4 个类型定义文件
+  - file: "src/types/index.ts / analytics.ts / form.ts / plugin.ts"
+    path: web/src/types/
+    purpose: TypeScript 类型定义
+    key_elements: []
+    lines: ~200
+
+
+# ─────────────────────────────────────────────────
+# 二、包依赖关系图谱
+# ─────────────────────────────────────────────────
+patterns_found:
+  - category: architecture
+    pattern: 分层依赖（types → interfaces → implementations）
+    description: |
+      types 包为零依赖基础层；
+      interfaces 包只依赖 types；
+      engine/worker/storage 实现层依赖 interfaces + types；
+      endpoint 层依赖 interfaces + sysmanager + jwtutil；
+      examples 顶层组装所有层。
+    examples:
+      - file: interfaces/components.go
+        location: "interfaces/components.go:7"
+        snippet: "\"github.com/zhiyunliu/distributed-workflow/types\""
+      - file: engine/engine.go
+        location: "engine/engine.go:13-16"
+        snippet: |
+          "github.com/zhiyunliu/distributed-workflow/interfaces"
+          "github.com/zhiyunliu/distributed-workflow/plugin"
+          "github.com/zhiyunliu/distributed-workflow/rpc"
+          "github.com/zhiyunliu/distributed-workflow/storage/sqlserver"
+    prevalence: common
+
+  - category: architecture
+    pattern: engine 直接 import endpoint/schedule（反向依赖问题）
+    description: |
+      engine/schedule_manager.go import 了 endpoint/schedule，
+      而 endpoint/http 又使用 engine.D6ServiceInjector 接口与 engine 通信，
+      形成 engine → endpoint/schedule 单向依赖（非循环，但跨层）。
+      迁移后此依赖需重新设计。
+    examples:
+      - file: engine/schedule_manager.go
+        location: "engine/schedule_manager.go:9"
+        snippet: "\"github.com/zhiyunliu/distributed-workflow/endpoint/schedule\""
+    prevalence: occasional
+
+  - category: architecture
+    pattern: 系统管理四层结构（sysmodel → sysrepo → sysbuiltin/syssqlserver → sysmanager）
+    description: |
+      sysmodel：纯数据模型，无依赖
+      sysrepo：仓储接口，依赖 sysmodel
+      syssqlserver：SQL Server 实现，依赖 sysmodel + sysrepo
+      sysbuiltin：业务逻辑，依赖 sysmanager + sysmodel + sysrepo（+ jwtutil for auth）
+      sysmanager：接口定义，依赖 sysmodel
+    examples:
+      - file: sysbuiltin/manager.go
+        location: "sysbuiltin/manager.go:4-6"
+        snippet: |
+          sysmanager / sysmodel / sysrepo
+    prevalence: common
+
+  - category: architecture
+    pattern: rpc 包作为 engine ↔ worker 通信桥梁
+    description: |
+      rpc/engine_client.go 被 worker 使用（调用 Engine gRPC）；
+      rpc/worker_client.go 被 engine 使用（调用 Worker gRPC）；
+      两个 client 均依赖 proto + types，无循环。
+    examples:
+      - file: worker/worker.go
+        location: "worker/worker.go:12"
+        snippet: "\"github.com/zhiyunliu/distributed-workflow/rpc\""
+      - file: engine/worker_manager.go
+        location: "engine/worker_manager.go:9"
+        snippet: "\"github.com/zhiyunliu/distributed-workflow/rpc\""
+    prevalence: common
+
+  - category: structure
+    pattern: examples 中 main.go 直接组装全部层
+    description: |
+      examples/*/main.go 同时 import engine、worker、endpoint/http、
+      storage/redis、storage/sqlserver、types、worker/executors，
+      是唯一将所有层组装在一起的入口点，目前没有独立 cmd/ 目录。
+    examples:
+      - file: examples/serial/main.go
+        location: "examples/serial/main.go:25-31"
+        snippet: |
+          endpoint/http, engine, storage/redis,
+          storage/sqlserver, types, worker, worker/executors
+    prevalence: occasional
+
+  - category: naming
+    pattern: 包名与目录名一致（除 sysbuiltin 包名为 builtin）
+    description: |
+      sysbuiltin/manager.go: package builtin
+      其余所有包均 package 名与目录名相同。
+    examples:
+      - file: sysbuiltin/manager.go
+        location: "sysbuiltin/manager.go:1"
+        snippet: "package builtin"
+    prevalence: occasional
+
+
+# ─────────────────────────────────────────────────
+# 三、目录到目标结构的映射
+# ─────────────────────────────────────────────────
+related_architecture:
+  components_relevant_to_domain:
+    - component: types + proto
+      responsibility: 零依赖基础数据模型与 gRPC 协议
+      location: "types/ + proto/"
+      relationship_to_domain: >
+        映射到 runtime-execution/internal/proto/ 和
+        runtime-execution/internal/common/（types 部分）
+
+    - component: interfaces
+      responsibility: 工作流引擎核心抽象接口
+      location: interfaces/
+      relationship_to_domain: >
+        映射到 runtime-execution/pkg/api/（对外开放接口）
+        以及 runtime-execution/internal/engine/ 内部接口
+
+    - component: dag
+      responsibility: DAG 拓扑排序算法
+      location: dag/
+      relationship_to_domain: >
+        映射到 runtime-execution/internal/common/dag/
+
+    - component: engine
+      responsibility: 工作流引擎核心实现（调度、生命周期、各服务）
+      location: engine/
+      relationship_to_domain: >
+        映射到 runtime-execution/internal/engine/（全部 .go 文件）
+
+    - component: worker + worker/executors
+      responsibility: 分布式执行节点 + 内置节点执行器
+      location: "worker/ + worker/executors/"
+      relationship_to_domain: >
+        worker/ → runtime-execution/internal/worker/
+        worker/executors/ → runtime-execution/pkg/node/
+
+    - component: endpoint/http
+      responsibility: HTTP API 端点（兼管理接口与触发接口）
+      location: endpoint/http/
+      relationship_to_domain: >
+        触发类路由（D1-D3 workflow/instance） →
+            runtime-execution/pkg/endpoint/http/
+        管理类路由（D4-D6 系统管理 + 表单 + 插件 + OAuth） →
+            config-management/backend/internal/handler/
+        注：当前 server.go 混合了两类职责，迁移时需拆分
+
+    - component: endpoint/schedule
+      responsibility: 定时触发端点
+      location: endpoint/schedule/cron.go
+      relationship_to_domain: >
+        映射到 runtime-execution/pkg/endpoint/schedule/
+
+    - component: storage/redis
+      responsibility: Redis 队列 + 分布式锁
+      location: storage/redis/
+      relationship_to_domain: >
+        映射到 runtime-execution/internal/storage/redis/
+
+    - component: storage/sqlserver
+      responsibility: 工作流数据持久化（SQL Server）
+      location: storage/sqlserver/
+      relationship_to_domain: >
+        映射到 runtime-execution/internal/storage/sqlserver/
+        schema.sql 系列保留在同目录
+
+    - component: rpc
+      responsibility: engine ↔ worker gRPC 客户端封装
+      location: rpc/
+      relationship_to_domain: >
+        映射到 runtime-execution/internal/common/rpc/ 或
+        runtime-execution/internal/proto/（与 proto 合并）
+
+    - component: plugin
+      responsibility: 插件 SDK + 运行时注册表
+      location: plugin/
+      relationship_to_domain: >
+        sdk.go → runtime-execution/pkg/api/（Plugin 接口对外开放）
+        registry.go → runtime-execution/internal/engine/（内部使用）
+
+    - component: registry/nacos
+      responsibility: Nacos 服务注册
+      location: registry/nacos/
+      relationship_to_domain: >
+        映射到 runtime-execution/pkg/loader/ 或
+        runtime-execution/internal/common/registry/
+
+    - component: jwtutil
+      responsibility: HS256 JWT 工具，无项目内依赖
+      location: jwtutil/
+      relationship_to_domain: >
+        映射到 config-management/backend/internal/（内部工具）
+        或提取为两个子模块共享的公共库
+
+    - component: sysmodel + sysrepo + sysmanager
+      responsibility: 系统管理数据模型 + 接口定义
+      location: "sysmodel/ + sysrepo/ + sysmanager/"
+      relationship_to_domain: >
+        全部映射到 config-management/backend/internal/
+        sysmodel → internal/model/
+        sysrepo  → internal/dao/（接口层）
+        sysmanager → internal/service/（接口层）
+
+    - component: sysbuiltin
+      responsibility: 系统管理业务逻辑实现
+      location: sysbuiltin/
+      relationship_to_domain: >
+        映射到 config-management/backend/internal/service/
+
+    - component: syssqlserver
+      responsibility: 系统管理 SQL Server 数据层
+      location: syssqlserver/
+      relationship_to_domain: >
+        映射到 config-management/backend/internal/dao/
+
+    - component: web
+      responsibility: 前端管理界面（Vue3+Vite+TS+ElementPlus+LogicFlow）
+      location: web/
+      relationship_to_domain: >
+        整体映射到 config-management/frontend/
+        内部结构已符合目标规范（src/api/ src/views/ src/components/ 等）
+
+    - component: examples
+      responsibility: 使用示例（串行/并行/分支流程）
+      location: examples/
+      relationship_to_domain: >
+        整体保留为 examples/，内部 main.go 中 import 路径需全部更新
+
+  interfaces_used_by_domain:
+    - interface: interfaces.WorkflowService
+      location: interfaces/services.go
+      usage_pattern: >
+        engine.WorkflowServiceImpl 实现，endpoint/http.Server 注入调用
+
+    - interface: interfaces.NodeExecutor
+      location: interfaces/components.go
+      usage_pattern: >
+        worker/executors/*.go 实现，worker.ExecutorContainer 管理
+
+    - interface: sysmanager.Manager
+      location: sysmanager/interfaces.go
+      usage_pattern: >
+        sysbuiltin.manager 实现，endpoint/http.Server 注入
+
+  data_flow_involving_domain: |
+    HTTP请求 → endpoint/http.Server
+               → engine.WorkflowServiceImpl（via interfaces）
+               → storage/sqlserver.Repository（via interfaces）
+               → SQL Server DB
+    Worker执行 → worker.NodeWorker
+               → rpc.EngineClient（gRPC）
+               → engine.EngineServer
+               → storage/redis.Queue（任务队列）
+
+  key_relationships_to_domain:
+    - from: engine
+      to: "interfaces, types, plugin, rpc, storage/sqlserver, storage/redis(via scheduler), dag, endpoint/schedule"
+      relationship: imports
+    - from: worker
+      to: "interfaces, rpc, proto, types, worker/executors"
+      relationship: imports
+    - from: "endpoint/http"
+      to: "interfaces, sysmanager, types, jwtutil"
+      relationship: imports
+    - from: sysbuiltin
+      to: "sysmanager, sysmodel, sysrepo, jwtutil"
+      relationship: imports
+    - from: syssqlserver
+      to: "sysmodel, sysrepo"
+      relationship: imports
+    - from: rpc
+      to: "proto, types"
+      relationship: imports
+    - from: "storage/sqlserver"
+      to: types
+      relationship: imports
+    - from: "storage/redis"
+      to: types
+      relationship: imports
+    - from: "interfaces, plugin/sdk.go"
+      to: types
+      relationship: imports
+    - from: "sysrepo, sysmanager"
+      to: sysmodel
+      relationship: imports
+    - from: "registry/nacos"
+      to: types
+      relationship: imports
+
+
+# ─────────────────────────────────────────────────
+# 四、技术栈
+# ─────────────────────────────────────────────────
+related_technology_stack:
+  languages_used_in_domain:
+    - Go 1.25.7
+    - TypeScript 5.5.3
+    - SQL (T-SQL / SQL Server)
+    - Protocol Buffers 3
+
+  frameworks_used_in_domain:
+    - name: gin-gonic/gin v1.12.0
+      usage_in_domain: HTTP 服务器（endpoint/http）
+    - name: google.golang.org/grpc v1.80.0
+      usage_in_domain: Engine ↔ Worker 通信（rpc + proto）
+    - name: Vue 3.4.31
+      usage_in_domain: 前端 SPA 框架（web/src）
+    - name: Vite 5.3.4
+      usage_in_domain: 前端构建工具
+    - name: Element Plus 2.7.6
+      usage_in_domain: 前端 UI 组件库
+    - name: LogicFlow 1.2.28
+      usage_in_domain: 工作流可视化设计器（web/src/views/workflow/WorkflowDesigner.vue）
+    - name: Pinia 2.1.7
+      usage_in_domain: 前端状态管理
+
+  libraries_used_in_domain:
+    - name: microsoft/go-mssqldb v1.9.8
+      purpose_in_domain: SQL Server 驱动（storage/sqlserver、syssqlserver）
+    - name: redis/go-redis/v9 v9.18.0
+      purpose_in_domain: Redis 客户端（storage/redis）
+    - name: rs/zerolog v1.35.1
+      purpose_in_domain: 结构化日志（全项目）
+    - name: google/uuid v1.6.0
+      purpose_in_domain: UUID 生成（流程ID、实例ID）
+    - name: nacos-sdk-go/v2 v2.3.5
+      purpose_in_domain: Nacos 服务注册（registry/nacos）
+
+  external_apis_used_in_domain:
+    - name: SQL Server
+      integration_point: "storage/sqlserver、syssqlserver（via go-mssqldb）"
+    - name: Redis
+      integration_point: "storage/redis（任务队列、分布式锁）"
+    - name: Nacos
+      integration_point: "registry/nacos（服务注册与发现）"
+
+
+# ─────────────────────────────────────────────────
+# 五、当前约定
+# ─────────────────────────────────────────────────
+related_conventions:
+  naming_patterns_in_domain: |
+    Go 包名：小写单词，与目录名一致（除 sysbuiltin 包名为 builtin）
+    结构体：大驼峰，含 JSON 标签
+    接口文件：按职责拆分（services.go / components.go / repository.go）
+    前端组件：大驼峰 .vue 文件（UserManage.vue、WorkflowDesigner.vue）
+    前端 API 封装：小写文件名匹配后端资源名（workflow.ts、instance.ts）
+
+  structure_of_domain: |
+    单一 Go 模块，所有包在同一 module 下平铺
+    前后端分离（web/ 独立前端项目，后端无前端资产）
+    examples/ 作为顶层组装入口（无独立 cmd/）
+
+  error_handling_in_domain: |
+    Go：错误显式返回，禁止忽略 error，函数签名末尾返回 error
+    HTTP：统一 JSON 响应体 {code, message, data}
+    gRPC：返回标准 grpc status error
+
+  testing_in_domain: |
+    单元测试文件与被测文件同目录（_test.go 后缀）
+    覆盖包：engine/worker_manager_test.go、worker/executor_container_test.go、worker/executors/executors_test.go
+
+  documentation_in_domain: |
+    每个包有 doc.go 包文档
+    接口/结构体有详细注释（中文）
+
+
+# ─────────────────────────────────────────────────
+# 六、依赖汇总（迁移关键）
+# ─────────────────────────────────────────────────
+related_dependencies:
+  internal:
+    - component: types
+      relationship_to_domain: 所有包的共同基础，零内部依赖
+      direction: outbound
+
+    - component: proto
+      relationship_to_domain: gRPC 消息定义，被 rpc/engine/worker 使用
+      direction: outbound
+
+    - component: interfaces
+      relationship_to_domain: 核心抽象层，被 engine/worker/endpoint/sysbuiltin 依赖
+      direction: outbound
+
+    - component: dag
+      relationship_to_domain: 仅被 engine/scheduler.go 使用
+      direction: outbound
+
+    - component: rpc
+      relationship_to_domain: 被 engine（worker_client）和 worker（engine_client）双向使用
+      direction: bidirectional
+
+    - component: plugin
+      relationship_to_domain: 被 engine 使用（plugin_service.go）
+      direction: outbound
+
+    - component: "storage/sqlserver"
+      relationship_to_domain: 被 engine/engine.go 直接 import（依赖具体实现，非接口）
+      direction: outbound
+
+    - component: "storage/redis"
+      relationship_to_domain: 被 engine/scheduler.go 直接 import
+      direction: outbound
+
+    - component: "endpoint/schedule"
+      relationship_to_domain: 被 engine/schedule_manager.go import（跨层依赖）
+      direction: outbound
+
+    - component: jwtutil
+      relationship_to_domain: 被 sysbuiltin/auth_service.go 和 endpoint/http/server_d4.go 使用
+      direction: outbound
+
+    - component: sysmodel
+      relationship_to_domain: 系统管理基础模型，被 sysmanager/sysrepo/sysbuiltin/syssqlserver 使用
+      direction: outbound
+
+    - component: sysrepo
+      relationship_to_domain: 仓储接口，被 sysbuiltin/syssqlserver 实现
+      direction: outbound
+
+    - component: sysmanager
+      relationship_to_domain: 服务接口，被 sysbuiltin/endpoint/http 使用
+      direction: outbound
+
+    - component: sysbuiltin
+      relationship_to_domain: 系统管理业务逻辑，被 examples/main.go 或 engine 注入
+      direction: inbound
+
+    - component: syssqlserver
+      relationship_to_domain: 系统管理数据层，被组装层（examples/engine）使用
+      direction: inbound
+
+  external:
+    - name: gin v1.12.0
+      purpose_for_domain: HTTP 路由
+    - name: grpc v1.80.0
+      purpose_for_domain: Engine ↔ Worker RPC
+    - name: go-mssqldb v1.9.8
+      purpose_for_domain: SQL Server 驱动
+    - name: go-redis v9.18.0
+      purpose_for_domain: Redis 客户端
+    - name: zerolog v1.35.1
+      purpose_for_domain: 日志
+    - name: uuid v1.6.0
+      purpose_for_domain: ID 生成
+    - name: nacos-sdk-go v2.3.5
+      purpose_for_domain: 服务注册
+
+
+# ─────────────────────────────────────────────────
+# 七、安全性观察
+# ─────────────────────────────────────────────────
+domain_security_considerations:
+  sensitive_areas:
+    - area: JWT 生成与验证
+      location: jwtutil/jwt.go
+      concern: 纯标准库 HS256 实现，迁移后密钥需通过配置文件/环境变量注入，不可硬编码
+    - area: SQL Server 连接字符串
+      location: storage/sqlserver/repository.go
+      concern: DSN 包含凭据，迁移后需确保通过配置注入
+    - area: D6 OAuth 服务
+      location: "engine/oauth_service.go, storage/sqlserver/oauth_repository.go"
+      concern: OAuth token 需安全存储，迁移后需检查加密机制
+  authentication_patterns_in_domain: JWT Bearer Token（Authorization 请求头）
+  authorization_patterns_in_domain: 基于角色（Role）权限校验，sysmanager.PermissionService
+  data_validation_in_domain: gin validator + 业务层手动校验
+
+
+# ─────────────────────────────────────────────────
+# 八、测试模式
+# ─────────────────────────────────────────────────
+testing_patterns:
+  framework: Go 标准 testing 包
+  coverage_areas:
+    - engine/worker_manager（单元测试）
+    - worker/executor_container（单元测试）
+    - worker/executors（内置执行器单元测试）
+  test_organization: 测试文件与被测文件同目录，_test.go 后缀
+  mock_patterns:
+    - 接口 mock（golang/mock v1.6.0）
+
+
+# ─────────────────────────────────────────────────
+# 九、开放问题（迁移决策点）
+# ─────────────────────────────────────────────────
+open_questions:
+  - question: config-management 后端是否应创建独立的 go.mod？
+    context: |
+      目标架构有两个独立应用（config-management/backend 和 runtime-execution），
+      各自需要独立的 go.mod 吗？还是保留 monorepo 单 module？
+    type: decision_blocker
+    affects:
+      - go.mod 拆分策略
+      - 所有 import 路径（需全量替换）
+      - examples/ 中的 import
+
+  - question: endpoint/http 中管理路由与触发路由如何拆分？
+    context: |
+      当前 Server 结构体混合了 D1-D3 的流程触发路由和 D4-D6 的系统管理路由。
+      目标架构将管理路由归 config-management/backend，触发路由归 runtime-execution/pkg/endpoint。
+      需要决定拆分边界（哪些 handler 进哪个子模块）。
+    type: decision_blocker
+    affects:
+      - config-management/backend/internal/handler/ 内容
+      - runtime-execution/pkg/endpoint/ 内容
+      - sysbuiltin/syssqlserver 归属
+
+  - question: engine 依赖 storage/sqlserver（具体实现）是否在迁移时改为依赖接口？
+    context: |
+      engine/engine.go 直接 import storage/sqlserver（具体实现），
+      违反依赖倒置原则。迁移是否同时重构为依赖 interfaces.WorkflowRepository？
+    type: decision_blocker
+    affects:
+      - runtime-execution/internal/engine/ 结构
+      - 是否需要在 engine 新增依赖注入初始化代码
+
+  - question: jwtutil 是否成为两个子模块的共享库？
+    context: |
+      jwtutil 目前被 sysbuiltin 和 endpoint/http 使用，
+      迁移后如果是双模块，需要决定：放入 config-management 还是提取为第三个内部包。
+    type: decision_blocker
+    affects:
+      - go.mod 结构
+      - import 路径
+
+  - question: sysbuiltin 包名 builtin 与目录名 sysbuiltin 不一致，迁移时是否同步修正？
+    context: |
+      sysbuiltin/manager.go 声明 package builtin，但目录名是 sysbuiltin。
+      迁移是修正包名为 sysbuiltin 还是改目录名为 builtin？
+    type: nice_to_know
+    affects:
+      - 所有 import sysbuiltin 的文件
+
+  - question: proto 文件是否为两个模块共享？还是各自维护副本？
+    context: |
+      gRPC 协议在 runtime-execution 内部使用，config-management 不直接使用 gRPC。
+      因此 proto 可以仅属于 runtime-execution。
+    type: decision_blocker
+    affects:
+      - runtime-execution/internal/proto/ 位置
+      - proto 生成命令（Makefile）
+
+  - question: 数据库 schema SQL 文件迁移到哪个子模块？
+    context: |
+      schema.sql 系列目前在 storage/sqlserver/ 下，包含工作流表和系统管理表（D4）。
+      拆分后需确定各 sql 文件的归属子模块。
+    type: nice_to_know
+    affects:
+      - config-management 数据库初始化
+      - runtime-execution 数据库初始化
+
+
+# ─────────────────────────────────────────────────
+# 十、迁移难点 & 缺口
+# ─────────────────────────────────────────────────
+gaps:
+  - area: 无独立 cmd/ 入口
+    description: |
+      当前无 cmd/engine 或 cmd/worker 目录，服务启动逻辑分散在 examples/ main.go 中。
+      目标架构要求创建 runtime-execution/cmd/engine/ 和 runtime-execution/cmd/worker/。
+      需要新建这两个入口文件。
+    impact: decision_blocker
+    affects:
+      - runtime-execution/cmd/engine/main.go（新建）
+      - runtime-execution/cmd/worker/main.go（新建）
+
+  - area: config-management/backend 无现成入口
+    description: |
+      当前没有专门的配置管理后端服务入口，系统管理 HTTP 接口混在 endpoint/http 中。
+      需要新建 config-management/backend/cmd/api/main.go，
+      提取 sysbuiltin + syssqlserver + endpoint/http(管理部分) 的组装逻辑。
+    impact: decision_blocker
+    affects:
+      - config-management/backend/cmd/api/main.go（新建）
+
+  - area: engine 直接依赖 storage 具体实现
+    description: |
+      engine.go import storage/sqlserver（非接口），违反依赖倒置。
+      迁移时若不同步重构，则 runtime-execution/internal/engine 仍强绑定 sqlserver。
+      若重构则需新增 engine 初始化 wire/构造函数改造工作量。
+    impact: research_blocker
+    affects:
+      - runtime-execution/internal/engine/engine.go
+
+  - area: engine 依赖 endpoint/schedule（跨层）
+    description: |
+      engine/schedule_manager.go import endpoint/schedule，
+      迁移到新结构后两者可能在不同子目录，但如果同属 runtime-execution 则问题不大。
+      若 endpoint 单独提取为 pkg/endpoint，则需确认 internal/engine 可以 import pkg/endpoint。
+    impact: research_blocker
+    affects:
+      - runtime-execution/internal/engine/schedule_manager.go
+      - runtime-execution/pkg/endpoint/schedule/
+
+  - area: go.mod 模块路径全量替换
+    description: |
+      当前所有 import 使用 github.com/zhiyunliu/distributed-workflow/xxx。
+      拆分为双 module 后，import 路径将变为：
+        - github.com/zhiyunliu/distributed-workflow/config-management/backend/...
+        - github.com/zhiyunliu/distributed-workflow/runtime-execution/...
+      或使用全新模块路径，需要对 ~70+ import 行全量替换（可通过脚本批量处理）。
+    impact: decision_blocker
+    affects:
+      - 全部 .go 文件
+
+  - area: 前端 API 基础路径配置
+    description: |
+      前端拆分后若 config-management/frontend 请求的后端由独立服务提供，
+      需确认 vite.config.ts 中的 proxy 配置和 src/utils/request.ts 的 baseURL 指向。
+      当前 web/ 已配置 vite.config.ts（禁止修改）。
+    impact: nice_to_know
+    affects:
+      - config-management/frontend/（web/ 整体迁移）
+      - vite.config.ts proxy 配置

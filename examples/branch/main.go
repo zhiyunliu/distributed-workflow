@@ -15,13 +15,13 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
-	endpointhttp "github.com/zhiyunliu/distributed-workflow/endpoint/http"
-	"github.com/zhiyunliu/distributed-workflow/engine"
-	"github.com/zhiyunliu/distributed-workflow/storage/redis"
-	"github.com/zhiyunliu/distributed-workflow/storage/sqlserver"
-	"github.com/zhiyunliu/distributed-workflow/types"
-	"github.com/zhiyunliu/distributed-workflow/worker"
-	"github.com/zhiyunliu/distributed-workflow/worker/executors"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/common/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/engine"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/storage/redis"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/storage/sqlserver"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/worker"
+	endpointhttp "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/endpoint/http"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/node"
 )
 
 const (
@@ -50,8 +50,8 @@ func main() {
 	}
 
 	container := worker.NewExecutorContainer()
-	_ = container.Register(&executors.LogExecutor{})
-	_ = container.Register(&executors.SleepExecutor{})
+	_ = container.Register(&node.LogExecutor{})
+	_ = container.Register(&node.SleepExecutor{})
 
 	w, err := worker.New(worker.Config{
 		WorkerID:     "worker-1",
