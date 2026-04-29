@@ -15,13 +15,13 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/engine"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/storage/redis"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/storage/sqlserver"
-	"github.com/zhiyunliu/distributed-workflow/runtime-execution/internal/worker"
 	endpointhttp "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/endpoint/http"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/engine"
 	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/node"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/storage/redis"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/storage/sqlserver"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/worker"
 )
 
 const (
@@ -44,7 +44,7 @@ func main() {
 		log.Fatal().Err(err).Msg("connect redis failed")
 	}
 
-	eng := engine.New(engine.Config{GRPCAddr: engineGRPCAddr}, repo, redisClient, redisClient.RawClient())
+	eng := engine.New(engine.Config{GRPCAddr: engineGRPCAddr}, repo, redisClient, redisClient.RawClient(), nil, nil, nil, nil, nil)
 	if err := eng.Start(); err != nil {
 		log.Fatal().Err(err).Msg("start engine failed")
 	}
@@ -119,5 +119,3 @@ func main() {
 	eng.Stop()
 	_ = httpServer.Stop()
 }
-
-
