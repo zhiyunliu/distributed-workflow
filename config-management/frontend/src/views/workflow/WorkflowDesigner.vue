@@ -28,6 +28,10 @@ interface LogicFlowLike {
   getGraphData(): { nodes: GraphNode[]; edges: GraphEdge[] }
   destroy?: () => void
   dnd?: { startDrag: (node: { type: string }) => void }
+  register: (type: string, definition: any) => void
+  addNode: (node: any) => void
+  getNodeModelById: (id: string) => any
+  setTheme(theme: Record<string, any>): void
 }
 
 const route = useRoute()
@@ -53,6 +57,47 @@ const nodeTypes = [
   { type: 'subflow', label: '子流程', icon: '⊡', color: '#00bcd4' },
 ]
 
+// 注册节点类型
+function registerNodeTypes() {
+  if (!lf) return
+
+  // 为每个节点类型注册
+  nodeTypes.forEach(node => {
+    // 注册自定义节点
+    (lf as LogicFlowLike).register(node.type, ({ RectNode, RectNodeModel }: { RectNode: any; RectNodeModel: any }) => {
+      // 自定义视图
+      class View extends RectNode {
+        static extendKey = `${node.type.toUpperCase()}_NODE_VIEW`
+      }
+
+      // 自定义模型
+      class Model extends RectNodeModel {
+        static extendKey = `${node.type.toUpperCase()}_NODE_MODEL`
+
+        setAttributes() {
+          super.setAttributes()
+          
+          // 设置节点样式
+          this.fill = '#FFFFFF'
+          this.stroke = node.color
+          this.radius = 4
+          
+          // 设置节点文本样式
+          this.text.style = {
+            fontSize: 12,
+            fill: '#333',
+          }
+        }
+      }
+
+      return {
+        view: View,
+        model: Model,
+      }
+    })
+  })
+}
+
 async function initLogicFlow() {
   if (!containerRef.value) return
   try {
@@ -63,7 +108,27 @@ async function initLogicFlow() {
       container: containerRef.value,
       grid: true,
       keyboard: { enabled: true },
+      background: {
+        color: '#f7f9ff'
+      },
+      // 设置缩放限制
+      stopScrollZoom: false,
     }) as unknown as LogicFlowLike
+
+    // 注册节点类型
+    registerNodeTypes()
+
+    // 设置主题
+    lf.setTheme({
+      nodeText: { 
+        overflowMode: 'ellipsis',
+        lineHeight: 1.4,
+      },
+      edgeText: {
+        overflowMode: 'ellipsis',
+        lineHeight: 1.4,
+      }
+    })
 
     lf.render({})
 
@@ -175,18 +240,74 @@ function transformEdges(graphData: { edges: GraphEdge[] }): WorkflowConnection[]
   })
 }
 
-function onDragNode(type: string) {
-  lf?.dnd?.startDrag({ type })
+function onDragStart(type: string) {
+  // 保存当前拖拽的节点类型，以便drop事件处理
+  window.draggingNodeType = type
 }
 
-onMounted(initLogicFlow)
+function onDrop(e: DragEvent) {
+  if (!lf || !window.draggingNodeType) return
+
+  const nodeId = `${window.draggingNodeType}_${Date.now()}`
+  const rect = containerRef.value?.getBoundingClientRect()
+  
+  if (rect) {
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+    
+    lf.addNode({
+      id: nodeId,
+      type: window.draggingNodeType,
+      x,
+      y,
+      properties: {
+        label: nodeTypes.find(nt => nt.type === window.draggingNodeType)?.label || window.draggingNodeType
+      }
+    })
+    
+    window.draggingNodeType = null
+  }
+}
+
+function onDragOver(e: DragEvent) {
+  e.preventDefault() // 必须阻止默认行为才能触发drop事件
+}
+
+onMounted(() => {
+  initLogicFlow()
+  
+  // 添加拖放事件监听器
+  const container = containerRef.value
+  if (container) {
+    container.addEventListener('drop', onDrop as EventListener)
+    container.addEventListener('dragover', onDragOver as EventListener)
+  }
+})
 
 onBeforeUnmount(() => {
+  // 移除事件监听器
+  const container = containerRef.value
+  if (container) {
+    container.removeEventListener('drop', onDrop as EventListener)
+    container.removeEventListener('dragover', onDragOver as EventListener)
+  }
+  
   if (lf) {
     lf.destroy?.()
     lf = null
   }
 })
+
+// 全局变量用于存储拖拽的节点类型
+declare global {
+  interface Window {
+    draggingNodeType: string | null
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.draggingNodeType = null
+}
 </script>
 
 <template>
@@ -221,8 +342,9 @@ onBeforeUnmount(() => {
           v-for="node in nodeTypes"
           :key="node.type"
           class="node-item"
+          :data-type="node.type"
           draggable="true"
-          @mousedown="onDragNode(node.type)"
+          @dragstart="($event as DragEvent).dataTransfer?.setData('nodeType', node.type); onDragStart(node.type)"
         >
           <span class="node-icon" :style="{ color: node.color }">{{ node.icon }}</span>
           <span class="node-label">{{ node.label }}</span>
@@ -230,7 +352,13 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- 画布 -->
-      <div ref="containerRef" v-loading="loading" class="lf-container" />
+      <div 
+        ref="containerRef" 
+        v-loading="loading" 
+        class="lf-container" 
+        @drop="onDrop" 
+        @dragover="onDragOver"
+      />
 
       <!-- 属性面板 -->
       <div class="props-panel">
