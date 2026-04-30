@@ -16,8 +16,8 @@ import (
 	_ "github.com/microsoft/go-mssqldb"
 
 	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/dao"
-	"github.com/zhiyunliu\distributed-workflow/config-management/backend/internal/handler"
-	"github.com/zhiyunliu\distributed-workflow/config-management/backend/internal/service"
+	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/handler"
+	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/service"
 	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/sysmodel"
 	wfstore "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/storage/sqlserver"
 )
@@ -41,7 +41,7 @@ func main() {
 	sysDB := dao.NewDB(db)
 
 	// 初始化系统数据
-	initService := service.NewInitService(sysDB.UserRepo())
+	initService := service.NewInitService(sysDB)
 	if err := initService.InitializeSystem(nil); err != nil {
 		log.Printf("初始化系统数据失败: %v", err)
 	} else {

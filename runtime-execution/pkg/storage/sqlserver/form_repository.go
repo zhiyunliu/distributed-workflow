@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	api "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api"
 	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
@@ -22,6 +23,11 @@ type FormRepository struct {
 // NewFormRepository 创建表单仓库实例，复用已有 *sql.DB 连接池
 func NewFormRepository(db *sql.DB) *FormRepository {
 	return &FormRepository{db: db}
+}
+
+// getCurrentTime 获取当前时间，用于统一时间源，便于测试和时区控制
+func getCurrentTime() time.Time {
+	return time.Now()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -76,7 +82,7 @@ UPDATE workflow_form_definition
 SET form_name   = @formName,
     description = @description,
     form_schema = @formSchema,
-    updated_at  = GETDATE()
+    updated_at  = @updatedAt
 WHERE form_id = @formID AND deleted = 0`
 
 	_, err = r.db.ExecContext(ctx, q,
@@ -84,6 +90,7 @@ WHERE form_id = @formID AND deleted = 0`
 		sql.Named("description", nullString(def.Description)),
 		sql.Named("formSchema", schemaJSON),
 		sql.Named("formID", def.FormID),
+		sql.Named("updatedAt", getCurrentTime()),
 	)
 	return wrapDBErr(err, "UpdateFormDef")
 }
@@ -186,10 +193,12 @@ func (r *FormRepository) PublishFormDef(ctx context.Context, formID, changeLog, 
 
 	newVersion := currentVersion + 1
 
+	now := getCurrentTime()
+
 	// 2. 写入版本历史
 	const insQ = `
 INSERT INTO workflow_form_version_history (form_id, version, form_schema, change_log, created_by, created_at)
-VALUES (@formID, @version, @formSchema, @changeLog, @createdBy, GETDATE())`
+VALUES (@formID, @version, @formSchema, @changeLog, @createdBy, @createdAt)`
 
 	if _, err = tx.ExecContext(ctx, insQ,
 		sql.Named("formID", formID),
@@ -197,6 +206,7 @@ VALUES (@formID, @version, @formSchema, @changeLog, @createdBy, GETDATE())`
 		sql.Named("formSchema", schemaJSON),
 		sql.Named("changeLog", nullString(changeLog)),
 		sql.Named("createdBy", operatorID),
+		sql.Named("createdAt", now),
 	); err != nil {
 		_ = tx.Rollback()
 		return wrapDBErr(err, "PublishFormDef insert history")
@@ -207,13 +217,14 @@ VALUES (@formID, @version, @formSchema, @changeLog, @createdBy, GETDATE())`
 UPDATE workflow_form_definition
 SET version    = @version,
     status     = @status,
-    updated_at = GETDATE()
+    updated_at = @updatedAt
 WHERE form_id = @formID`
 
 	if _, err = tx.ExecContext(ctx, updQ,
 		sql.Named("version", newVersion),
 		sql.Named("status", types.FormStatusPublished),
 		sql.Named("formID", formID),
+		sql.Named("updatedAt", now),
 	); err != nil {
 		_ = tx.Rollback()
 		return wrapDBErr(err, "PublishFormDef update definition")
@@ -255,11 +266,12 @@ func (r *FormRepository) RollbackFormDef(ctx context.Context, formID string, ver
 
 	newVersion := currentVersion + 1
 	changeLog := fmt.Sprintf("rollback to v%d", version)
+	now := getCurrentTime()
 
 	// 3. 写入新版本历史记录（内容为回滚目标 schema）
 	const insQ = `
 INSERT INTO workflow_form_version_history (form_id, version, form_schema, change_log, created_by, created_at)
-VALUES (@formID, @version, @formSchema, @changeLog, @createdBy, GETDATE())`
+VALUES (@formID, @version, @formSchema, @changeLog, @createdBy, @createdAt)`
 
 	if _, err = tx.ExecContext(ctx, insQ,
 		sql.Named("formID", formID),
@@ -267,6 +279,7 @@ VALUES (@formID, @version, @formSchema, @changeLog, @createdBy, GETDATE())`
 		sql.Named("formSchema", histSchemaJSON),
 		sql.Named("changeLog", changeLog),
 		sql.Named("createdBy", operatorID),
+		sql.Named("createdAt", now),
 	); err != nil {
 		_ = tx.Rollback()
 		return wrapDBErr(err, "RollbackFormDef insert history")
@@ -277,13 +290,14 @@ VALUES (@formID, @version, @formSchema, @changeLog, @createdBy, GETDATE())`
 UPDATE workflow_form_definition
 SET form_schema = @formSchema,
     version     = @version,
-    updated_at  = GETDATE()
+    updated_at  = @updatedAt
 WHERE form_id = @formID`
 
 	if _, err = tx.ExecContext(ctx, updQ,
 		sql.Named("formSchema", histSchemaJSON),
 		sql.Named("version", newVersion),
 		sql.Named("formID", formID),
+		sql.Named("updatedAt", now),
 	); err != nil {
 		_ = tx.Rollback()
 		return wrapDBErr(err, "RollbackFormDef update definition")

@@ -3,7 +3,6 @@ package sqlserver
 import (
 	"context"
 	"database/sql"
-	"fmt"
 
 	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )

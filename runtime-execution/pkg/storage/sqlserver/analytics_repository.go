@@ -17,20 +17,20 @@ func NewAnalyticsRepository(db *sql.DB) *AnalyticsRepository {
 	return &AnalyticsRepository{db: db}
 }
 
-func (r *AnalyticsRepository) GetSystemOverview(ctx context.Context) (*types.SystemOverview, error) {
-	var overview types.SystemOverview
+func (r *AnalyticsRepository) GetSystemOverview(ctx context.Context) (*types.WorkflowOverviewStats, error) {
+	var overview types.WorkflowOverviewStats
 	query := `
 	SELECT 
-		(SELECT COUNT(1) FROM workflow_instances)                                                     AS total_insts,
-		(SELECT COUNT(1) FROM workflow_instances WHERE start_time >= DATEADD(MONTH, -1, GETDATE()))  AS monthly_new,
-		(SELECT COUNT(1) FROM workflow_instances WHERE status = 'running')                           AS active_insts,
-		(SELECT COUNT(1) FROM workflow_defs)                                                         AS total_workflows
+		(SELECT COUNT(1) FROM workflow_defs)                                                         AS total_workflows,
+		(SELECT COUNT(1) FROM workflow_instances)                                                    AS total_insts,
+		(SELECT COUNT(1) FROM workflow_instances WHERE start_time >= DATEADD(MONTH, -1, GETDATE())) AS monthly_new,
+		(SELECT COUNT(1) FROM workflow_instances WHERE status = 'running')                          AS active_insts
 	`
 	err := r.db.QueryRowContext(ctx, query).Scan(
+		&overview.TotalDefinitions,
 		&overview.TotalInstances,
-		&overview.MonthlyNew,
+		&overview.MonthlyNewInstances,
 		&overview.ActiveInstances,
-		&overview.TotalWorkflows,
 	)
 	if err != nil {
 		return nil, err
@@ -38,7 +38,7 @@ func (r *AnalyticsRepository) GetSystemOverview(ctx context.Context) (*types.Sys
 	return &overview, nil
 }
 
-func (r *AnalyticsRepository) GetWorkflowDailyStats(ctx context.Context, workflowID string, days int) ([]*types.WorkflowDailyStat, error) {
+func (r *AnalyticsRepository) GetWorkflowDailyStats(ctx context.Context, workflowID string, days int) ([]*types.WorkflowDailyStats, error) {
 	query := fmt.Sprintf(`
 	SELECT stat_date, start_count, complete_count, fail_count, avg_execution_time_ms, max_execution_time_ms, timeout_count, reject_count
 	FROM workflow_stats_workflow_daily
@@ -51,9 +51,9 @@ func (r *AnalyticsRepository) GetWorkflowDailyStats(ctx context.Context, workflo
 	}
 	defer rows.Close()
 
-	var stats []*types.WorkflowDailyStat
+	var stats []*types.WorkflowDailyStats
 	for rows.Next() {
-		var stat types.WorkflowDailyStat
+		var stat types.WorkflowDailyStats
 		err := rows.Scan(
 			&stat.StatDate,
 			&stat.StartCount,
@@ -72,14 +72,14 @@ func (r *AnalyticsRepository) GetWorkflowDailyStats(ctx context.Context, workflo
 	return stats, nil
 }
 
-// GetWorkflowDailyStatsByDate 查询流程日统计数据（来自 workflow_stats_workflow_daily）
-func (r *AnalyticsRepository) GetWorkflowDailyStatsByDate(ctx context.Context, workflowID string, date time.Time) (*types.WorkflowDailyStat, error) {
+// GetWorkflowDailyStats 查询流程日统计数据（来自 workflow_stats_workflow_daily）
+func (r *AnalyticsRepository) GetWorkflowDailyStatsByDate(ctx context.Context, workflowID string, date time.Time) (*types.WorkflowDailyStats, error) {
 	query := `
 	SELECT workflow_id, stat_date, start_count, complete_count, fail_count, avg_execution_time_ms, max_execution_time_ms, timeout_count, reject_count
 	FROM workflow_stats_workflow_daily
 	WHERE workflow_id = @p1 AND stat_date = @p2`
 	
-	var stat types.WorkflowDailyStat
+	var stat types.WorkflowDailyStats
 	err := r.db.QueryRowContext(ctx, query, workflowID, date.Format("2006-01-02")).Scan(
 		&stat.WorkflowID,
 		&stat.StatDate,
@@ -100,7 +100,7 @@ func (r *AnalyticsRepository) GetWorkflowDailyStatsByDate(ctx context.Context, w
 	return &stat, nil
 }
 
-func (r *AnalyticsRepository) GetApprovalDailyStats(ctx context.Context, userID string, days int) ([]*types.ApprovalDailyStat, error) {
+func (r *AnalyticsRepository) GetApprovalDailyStats(ctx context.Context, userID string, days int) ([]*types.ApprovalPerformanceStats, error) {
 	query := fmt.Sprintf(`
 	SELECT stat_date, approve_count, reject_count, avg_approval_time_ms, timeout_count
 	FROM workflow_stats_approval_daily
@@ -113,9 +113,9 @@ func (r *AnalyticsRepository) GetApprovalDailyStats(ctx context.Context, userID 
 	}
 	defer rows.Close()
 
-	var stats []*types.ApprovalDailyStat
+	var stats []*types.ApprovalPerformanceStats
 	for rows.Next() {
-		var stat types.ApprovalDailyStat
+		var stat types.ApprovalPerformanceStats
 		err := rows.Scan(
 			&stat.StatDate,
 			&stat.ApproveCount,
@@ -131,7 +131,7 @@ func (r *AnalyticsRepository) GetApprovalDailyStats(ctx context.Context, userID 
 	return stats, nil
 }
 
-func (r *AnalyticsRepository) GetTopWorkflows(ctx context.Context, topN int, dateRange string) ([]*types.WorkflowRankItem, error) {
+func (r *AnalyticsRepository) GetTopWorkflows(ctx context.Context, topN int, dateRange string) ([]map[string]interface{}, error) {
 	var dateAddClause string
 	switch dateRange {
 	case "day":
@@ -159,17 +159,23 @@ func (r *AnalyticsRepository) GetTopWorkflows(ctx context.Context, topN int, dat
 	}
 	defer rows.Close()
 
-	var items []*types.WorkflowRankItem
+	var items []map[string]interface{}
 	for rows.Next() {
-		var item types.WorkflowRankItem
+		var name string
+		var totalCount int
 		err := rows.Scan(
-			&item.Name,
-			&item.Count,
+			&name,
+			&totalCount,
 		)
 		if err != nil {
 			return nil, err
 		}
-		items = append(items, &item)
+		
+		item := map[string]interface{}{
+			"name": name,
+			"count": totalCount,
+		}
+		items = append(items, item)
 	}
 	return items, nil
 }
