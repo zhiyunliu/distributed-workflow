@@ -32,6 +32,8 @@ interface LogicFlowLike {
   addNode: (node: any) => void
   getNodeModelById: (id: string) => any
   setTheme(theme: Record<string, any>): void
+  on: (eventName: string, callback: (data: any) => void) => void
+  off: (eventName: string) => void
 }
 
 const route = useRoute()
@@ -39,9 +41,10 @@ const router = useRouter()
 
 const workflowId = ref<string>((route.params.id as string) || '')
 const containerRef = ref<HTMLElement | null>(null)
-const currentDef = ref<Partial<WorkflowDef>>({ name: '新建流程', description: '' })
+const currentDef = ref<Partial<WorkflowDef>>({ name: '新建流程', description: '无' })
 const loading = ref(false)
 const saving = ref(false)
+const selectedNode = ref<WorkflowNode | null>(null)
 
 // LogicFlow 实例
 let lf: LogicFlowLike | null = null
@@ -64,10 +67,43 @@ function registerNodeTypes() {
   // 为每个节点类型注册
   nodeTypes.forEach(node => {
     // 注册自定义节点
-    (lf as LogicFlowLike).register(node.type, ({ RectNode, RectNodeModel }: { RectNode: any; RectNodeModel: any }) => {
+    (lf as LogicFlowLike).register(node.type, ({ RectNode, RectNodeModel, h }: { RectNode: any; RectNodeModel: any; h: any }) => {
       // 自定义视图
       class View extends RectNode {
         static extendKey = `${node.type.toUpperCase()}_NODE_VIEW`
+        
+        getShape() {
+          const { x, y } = this.props.model
+          
+          // 创建矩形元素
+          const rect = h('rect', {
+            x: x - 60,  // 基于中心点调整位置
+            y: y - 25,
+            width: 120,
+            height: 50,
+            fill: '#FFFFFF',
+            stroke: node.color,
+            strokeWidth: 2,
+            rx: 4,
+            ry: 4,
+          })
+
+          // 创建文本元素显示节点图标和名称
+          const text = h('text', {
+            x: x,
+            y: y, // 文本显示在矩形中心
+            textAnchor: 'middle',
+            dominantBaseline: 'middle',
+            fill: node.color,
+            fontWeight: 'bold',
+            fontSize: 12,
+          }, `${node.icon} ${node.label}`)
+
+          return h('g', {}, [
+            rect,
+            text
+          ])
+        }
       }
 
       // 自定义模型
@@ -76,6 +112,10 @@ function registerNodeTypes() {
 
         setAttributes() {
           super.setAttributes()
+          
+          // 设置节点尺寸
+          this.width = 120
+          this.height = 50
           
           // 设置节点样式
           this.fill = '#FFFFFF'
@@ -95,6 +135,33 @@ function registerNodeTypes() {
         model: Model,
       }
     })
+  })
+}
+
+// 节点选中事件处理
+function handleNodeSelect(nodeData: any) {
+  // 根据LogicFlow的数据结构创建节点对象
+  selectedNode.value = {
+    id: nodeData.id,
+    name: nodeData.properties?.label || nodeData.type || '未知节点',
+    type: nodeData.type,
+    description: nodeData.properties?.description || '',
+    config: nodeData.properties || {},
+  }
+}
+
+// 监听节点选中事件
+function listenToEvents() {
+  if (!lf) return
+
+  lf.on('selection:selected', (data) => {
+    if (data.nodes && data.nodes.length > 0) {
+      handleNodeSelect(data.nodes[0])
+    }
+  })
+
+  lf.on('node:click', (data) => {
+    handleNodeSelect(data.data)
   })
 }
 
@@ -135,6 +202,9 @@ async function initLogicFlow() {
     if (workflowId.value) {
       await loadWorkflow()
     }
+    
+    // 监听事件
+    listenToEvents()
   } catch (e) {
     console.error('LogicFlow 初始化失败', e)
     ElMessage.warning('流程设计器加载中，请稍候...')
@@ -219,7 +289,7 @@ function transformNodes(graphData: { nodes: GraphNode[] }): Record<string, Workf
       id,
       name: (props.label as string) || node.type,
       type: node.type,
-      description: '',
+      description: (props.description as string) || '',
       config: props,
     }
     return acc
@@ -261,7 +331,8 @@ function onDrop(e: DragEvent) {
       x,
       y,
       properties: {
-        label: nodeTypes.find(nt => nt.type === window.draggingNodeType)?.label || window.draggingNodeType
+        label: nodeTypes.find(nt => nt.type === window.draggingNodeType)?.label || window.draggingNodeType,
+        description: nodeTypes.find(nt => nt.type === window.draggingNodeType)?.label || window.draggingNodeType,
       }
     })
     
@@ -271,6 +342,29 @@ function onDrop(e: DragEvent) {
 
 function onDragOver(e: DragEvent) {
   e.preventDefault() // 必须阻止默认行为才能触发drop事件
+}
+
+// 更新节点属性
+function updateNodeProperty(propName: string, value: any) {
+  if (!selectedNode.value || !lf) return
+  
+  // 更新节点属性
+  lf.addNode({
+    ...selectedNode.value,
+    properties: {
+      ...selectedNode.value.config,
+      [propName]: value
+    }
+  })
+  
+  // 更新本地选中节点
+  selectedNode.value = {
+    ...selectedNode.value,
+    config: {
+      ...selectedNode.value.config,
+      [propName]: value
+    }
+  }
 }
 
 onMounted(() => {
@@ -293,6 +387,8 @@ onBeforeUnmount(() => {
   }
   
   if (lf) {
+    lf.off('selection:selected')
+    lf.off('node:click')
     lf.destroy?.()
     lf = null
   }
@@ -363,7 +459,108 @@ if (typeof window !== 'undefined') {
       <!-- 属性面板 -->
       <div class="props-panel">
         <div class="panel-title">属性配置</div>
-        <el-empty description="选择节点以配置属性" :image-size="80" />
+        <div v-if="selectedNode">
+          <el-form label-width="80px" size="default">
+            <el-form-item label="节点ID">
+              <el-input v-model="selectedNode.id" disabled />
+            </el-form-item>
+            <el-form-item label="节点名称">
+              <el-input 
+                v-model="(selectedNode as any).config.label" 
+                @input="(value) => updateNodeProperty('label', value)"
+              />
+            </el-form-item>
+            <el-form-item label="节点类型">
+              <el-input v-model="selectedNode.type" disabled />
+            </el-form-item>
+            <el-form-item label="描述">
+              <el-input 
+                v-model="(selectedNode as any).config.description" 
+                type="textarea"
+                @input="(value) => updateNodeProperty('description', value)"
+              />
+            </el-form-item>
+            
+            <!-- 根据节点类型显示特定配置 -->
+            <div v-if="selectedNode.type === 'approval'">
+              <el-divider>审批配置</el-divider>
+              <el-form-item label="审批人">
+                <el-input 
+                  v-model="(selectedNode as any).config.approver" 
+                  placeholder="输入审批人"
+                  @input="(value) => updateNodeProperty('approver', value)"
+                />
+              </el-form-item>
+              <el-form-item label="审批类型">
+                <el-select 
+                  v-model="(selectedNode as any).config.approvalType"
+                  @change="(value) => updateNodeProperty('approvalType', value)"
+                >
+                  <el-option label="单人审批" value="single"></el-option>
+                  <el-option label="多人会签" value="multi"></el-option>
+                  <el-option label="依次审批" value="sequential"></el-option>
+                </el-select>
+              </el-form-item>
+            </div>
+            
+            <div v-if="selectedNode.type === 'http'">
+              <el-divider>HTTP配置</el-divider>
+              <el-form-item label="请求地址">
+                <el-input 
+                  v-model="(selectedNode as any).config.url" 
+                  placeholder="输入请求地址"
+                  @input="(value) => updateNodeProperty('url', value)"
+                />
+              </el-form-item>
+              <el-form-item label="请求方法">
+                <el-select 
+                  v-model="(selectedNode as any).config.method"
+                  @change="(value) => updateNodeProperty('method', value)"
+                >
+                  <el-option label="GET" value="GET"></el-option>
+                  <el-option label="POST" value="POST"></el-option>
+                  <el-option label="PUT" value="PUT"></el-option>
+                  <el-option label="DELETE" value="DELETE"></el-option>
+                </el-select>
+              </el-form-item>
+            </div>
+            
+            <div v-if="selectedNode.type === 'script'">
+              <el-divider>脚本配置</el-divider>
+              <el-form-item label="脚本语言">
+                <el-select 
+                  v-model="(selectedNode as any).config.language"
+                  @change="(value) => updateNodeProperty('language', value)"
+                >
+                  <el-option label="JavaScript" value="javascript"></el-option>
+                  <el-option label="Python" value="python"></el-option>
+                </el-select>
+              </el-form-item>
+              <el-form-item label="脚本内容">
+                <el-input 
+                  v-model="(selectedNode as any).config.script" 
+                  type="textarea"
+                  :rows="4"
+                  placeholder="输入脚本内容"
+                  @input="(value) => updateNodeProperty('script', value)"
+                />
+              </el-form-item>
+            </div>
+            
+            <div v-if="selectedNode.type === 'condition'">
+              <el-divider>条件配置</el-divider>
+              <el-form-item label="条件表达式">
+                <el-input 
+                  v-model="(selectedNode as any).config.expression" 
+                  type="textarea"
+                  placeholder="输入条件表达式，如: amount > 1000"
+                  @input="(value) => updateNodeProperty('expression', value)"
+                />
+              </el-form-item>
+            </div>
+          </el-form>
+        </div>
+        <el-empty v-else description="请选择节点以配置属性" :image-size="80" />
       </div>
     </div>
   </div>
@@ -450,11 +647,15 @@ if (typeof window !== 'undefined') {
 }
 
 .props-panel {
-  width: 260px;
+  width: 320px;
   background: #fff;
   border-left: 1px solid #e6e6e6;
   padding: 12px;
   flex-shrink: 0;
   overflow-y: auto;
+}
+
+.el-divider {
+  margin: 16px 0;
 }
 </style>
