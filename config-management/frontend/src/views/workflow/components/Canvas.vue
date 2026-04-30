@@ -291,14 +291,14 @@ const deleteSelected = () => {
       const nodeIds = selectedData.nodes?.map((n: any) => n.id) || [];
       const edgeIds = selectedData.edges?.map((e: any) => e.id) || [];
       
+      // 删除节点
       nodeIds.forEach(id => {
         if (lf) {
-          const nodeModel = lf.getNodeModelById(id);
-          if (nodeModel) {
-            nodeModel.delete();
-          }
+          (lf as any).deleteNode && (lf as any).deleteNode(id);
         }
       });
+      
+      // 删除连线
       edgeIds.forEach(id => {
         if (lf && (lf as any).deleteEdge) {
           (lf as any).deleteEdge(id);
