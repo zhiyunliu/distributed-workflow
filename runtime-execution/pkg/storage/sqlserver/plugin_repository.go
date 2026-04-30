@@ -27,7 +27,7 @@ func (r *PluginRepository) ListPluginInfos(ctx context.Context, page, pageSize i
 	defer cancel()
 
 	var total int64
-	const countQ = `SELECT COUNT(*) FROM plugin_info`
+	const countQ = `SELECT COUNT(*) FROM workflow_plugin_info`
 	if err := r.db.QueryRowContext(ctx, countQ).Scan(&total); err != nil {
 		return nil, 0, wrapDBErr(err, "ListPluginInfos count")
 	}
@@ -37,9 +37,9 @@ func (r *PluginRepository) ListPluginInfos(ctx context.Context, page, pageSize i
 
 	offset := (page - 1) * pageSize
 	const q = `
-SELECT plugin_id, plugin_name, description, author, version, plugin_type,
+SELECT plugin_id, plugin_name, description, author, version, plugin_type, plugin_package,
        config_schema, status, is_official, download_count, rating, created_at, updated_at
-FROM plugin_info
+FROM workflow_plugin_info
 ORDER BY is_official DESC, download_count DESC
 OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY`
 
@@ -56,14 +56,16 @@ OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY`
 	for rows.Next() {
 		p := &types.PluginInfo{}
 		var configSchema sql.NullString
+		var pluginPackage sql.NullString
 		if err := rows.Scan(
 			&p.PluginID, &p.PluginName, &p.Description, &p.Author,
-			&p.Version, &p.PluginType, &configSchema, &p.Status,
+			&p.Version, &p.PluginType, &pluginPackage, &configSchema, &p.Status,
 			&p.IsOfficial, &p.DownloadCount, &p.Rating,
 			&p.CreatedAt, &p.UpdatedAt,
 		); err != nil {
 			return nil, 0, wrapDBErr(err, "ListPluginInfos scan")
 		}
+		p.PluginPackage = pluginPackage.String
 		p.ConfigSchema = configSchema.String
 		list = append(list, p)
 	}
@@ -79,16 +81,17 @@ func (r *PluginRepository) GetPluginInfo(ctx context.Context, pluginID string) (
 	defer cancel()
 
 	const q = `
-SELECT plugin_id, plugin_name, description, author, version, plugin_type,
+SELECT plugin_id, plugin_name, description, author, version, plugin_type, plugin_package,
        config_schema, status, is_official, download_count, rating, created_at, updated_at
-FROM plugin_info WHERE plugin_id = @p1`
+FROM workflow_plugin_info WHERE plugin_id = @p1`
 
 	row := r.db.QueryRowContext(ctx, q, sql.Named("p1", pluginID))
 	p := &types.PluginInfo{}
 	var configSchema sql.NullString
+	var pluginPackage sql.NullString
 	err := row.Scan(
 		&p.PluginID, &p.PluginName, &p.Description, &p.Author,
-		&p.Version, &p.PluginType, &configSchema, &p.Status,
+		&p.Version, &p.PluginType, &pluginPackage, &configSchema, &p.Status,
 		&p.IsOfficial, &p.DownloadCount, &p.Rating,
 		&p.CreatedAt, &p.UpdatedAt,
 	)
@@ -98,6 +101,7 @@ FROM plugin_info WHERE plugin_id = @p1`
 		}
 		return nil, wrapDBErr(err, "GetPluginInfo")
 	}
+	p.PluginPackage = pluginPackage.String
 	p.ConfigSchema = configSchema.String
 	return p, nil
 }
@@ -108,7 +112,7 @@ func (r *PluginRepository) UpsertPluginInfo(ctx context.Context, info *types.Plu
 	defer cancel()
 
 	const q = `
-MERGE INTO plugin_info AS target
+MERGE INTO workflow_plugin_info AS target
 USING (SELECT @p1 AS plugin_id) AS source
 ON target.plugin_id = source.plugin_id
 WHEN MATCHED THEN UPDATE SET
@@ -117,17 +121,18 @@ WHEN MATCHED THEN UPDATE SET
     author         = @p4,
     version        = @p5,
     plugin_type    = @p6,
-    config_schema  = @p7,
-    status         = @p8,
-    is_official    = @p9,
-    download_count = @p10,
-    rating         = @p11,
+    plugin_package = @p7,
+    config_schema  = @p8,
+    status         = @p9,
+    is_official    = @p10,
+    download_count = @p11,
+    rating         = @p12,
     updated_at     = GETDATE()
 WHEN NOT MATCHED THEN INSERT
-    (plugin_id, plugin_name, description, author, version, plugin_type,
+    (plugin_id, plugin_name, description, author, version, plugin_type, plugin_package,
      config_schema, status, is_official, download_count, rating, created_at, updated_at)
 VALUES
-    (@p1, @p2, @p3, @p4, @p5, @p6, @p7, @p8, @p9, @p10, @p11, GETDATE(), GETDATE());`
+    (@p1, @p2, @p3, @p4, @p5, @p6, @p7, @p8, @p9, @p10, @p11, @p12, GETDATE(), GETDATE());`
 
 	_, err := r.db.ExecContext(ctx, q,
 		sql.Named("p1", info.PluginID),
@@ -136,11 +141,12 @@ VALUES
 		sql.Named("p4", info.Author),
 		sql.Named("p5", info.Version),
 		sql.Named("p6", string(info.PluginType)),
-		sql.Named("p7", info.ConfigSchema),
-		sql.Named("p8", info.Status),
-		sql.Named("p9", info.IsOfficial),
-		sql.Named("p10", info.DownloadCount),
-		sql.Named("p11", info.Rating),
+		sql.Named("p7", info.PluginPackage),
+		sql.Named("p8", info.ConfigSchema),
+		sql.Named("p9", info.Status),
+		sql.Named("p10", info.IsOfficial),
+		sql.Named("p11", info.DownloadCount),
+		sql.Named("p12", info.Rating),
 	)
 	return wrapDBErr(err, "UpsertPluginInfo")
 }
@@ -150,7 +156,7 @@ func (r *PluginRepository) UpdatePluginStatus(ctx context.Context, pluginID stri
 	ctx, cancel := context.WithTimeout(ctx, defaultQueryTimeout)
 	defer cancel()
 
-	const q = `UPDATE plugin_info SET status = @p2, updated_at = GETDATE() WHERE plugin_id = @p1`
+	const q = `UPDATE workflow_plugin_info SET status = @p2, updated_at = GETDATE() WHERE plugin_id = @p1`
 	_, err := r.db.ExecContext(ctx, q,
 		sql.Named("p1", pluginID),
 		sql.Named("p2", status),
@@ -165,7 +171,7 @@ func (r *PluginRepository) GetPluginConfig(ctx context.Context, pluginID string)
 
 	const q = `
 SELECT plugin_id, plugin_version, config, status, installed_at, updated_at
-FROM plugin_config WHERE plugin_id = @p1`
+FROM workflow_plugin_config WHERE plugin_id = @p1`
 
 	row := r.db.QueryRowContext(ctx, q, sql.Named("p1", pluginID))
 	cfg := &types.PluginConfig{}
@@ -187,7 +193,7 @@ func (r *PluginRepository) UpsertPluginConfig(ctx context.Context, cfg *types.Pl
 	defer cancel()
 
 	const q = `
-MERGE INTO plugin_config AS target
+MERGE INTO workflow_plugin_config AS target
 USING (SELECT @p1 AS plugin_id) AS source
 ON target.plugin_id = source.plugin_id
 WHEN MATCHED THEN UPDATE SET
@@ -214,7 +220,7 @@ func (r *PluginRepository) DeletePluginConfig(ctx context.Context, pluginID stri
 	ctx, cancel := context.WithTimeout(ctx, defaultQueryTimeout)
 	defer cancel()
 
-	const q = `DELETE FROM plugin_config WHERE plugin_id = @p1`
+	const q = `DELETE FROM workflow_plugin_config WHERE plugin_id = @p1`
 	_, err := r.db.ExecContext(ctx, q, sql.Named("p1", pluginID))
 	return wrapDBErr(err, "DeletePluginConfig")
 }
@@ -226,7 +232,7 @@ func (r *PluginRepository) ListInstalledPlugins(ctx context.Context) ([]*types.P
 
 	const q = `
 SELECT plugin_id, plugin_version, config, status, installed_at, updated_at
-FROM plugin_config
+FROM workflow_plugin_config
 WHERE status IN (1, 2)
 ORDER BY installed_at DESC`
 

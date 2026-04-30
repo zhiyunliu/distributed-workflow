@@ -36,7 +36,7 @@ func (r *FormRepository) CreateFormDef(ctx context.Context, def *types.FormDefin
 	}
 
 	const q = `
-INSERT INTO form_definition (form_id, form_name, description, form_schema, version, status, created_by, created_at, updated_at, deleted)
+INSERT INTO workflow_form_definition (form_id, form_name, description, form_schema, version, status, created_by, created_at, updated_at, deleted)
 VALUES (@formID, @formName, @description, @formSchema, @version, @status, @createdBy, @createdAt, @updatedAt, 0)`
 
 	_, err = r.db.ExecContext(ctx, q,
@@ -57,7 +57,7 @@ VALUES (@formID, @formName, @description, @formSchema, @version, @status, @creat
 func (r *FormRepository) GetFormDef(ctx context.Context, formID string) (*types.FormDefinition, error) {
 	const q = `
 SELECT form_id, form_name, description, form_schema, version, status, created_by, created_at, updated_at, deleted
-FROM form_definition
+FROM workflow_form_definition
 WHERE form_id = @formID AND deleted = 0`
 
 	row := r.db.QueryRowContext(ctx, q, sql.Named("formID", formID))
@@ -72,7 +72,7 @@ func (r *FormRepository) UpdateFormDef(ctx context.Context, def *types.FormDefin
 	}
 
 	const q = `
-UPDATE form_definition
+UPDATE workflow_form_definition
 SET form_name   = @formName,
     description = @description,
     form_schema = @formSchema,
@@ -119,7 +119,7 @@ func (r *FormRepository) ListFormDefs(ctx context.Context, params types.FormList
 	where := strings.Join(whereParts, " AND ")
 
 	// 查询总数
-	countQ := fmt.Sprintf("SELECT COUNT(1) FROM form_definition WHERE %s", where)
+	countQ := fmt.Sprintf("SELECT COUNT(1) FROM workflow_form_definition WHERE %s", where)
 	var total int64
 	if err := r.db.QueryRowContext(ctx, countQ, args...).Scan(&total); err != nil {
 		return nil, 0, wrapDBErr(err, "ListFormDefs count")
@@ -131,7 +131,7 @@ func (r *FormRepository) ListFormDefs(ctx context.Context, params types.FormList
 	// 分页查询
 	dataQ := fmt.Sprintf(`
 SELECT form_id, form_name, description, form_schema, version, status, created_by, created_at, updated_at, deleted
-FROM form_definition
+FROM workflow_form_definition
 WHERE %s
 ORDER BY created_at DESC
 OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY`, where)
@@ -175,7 +175,7 @@ func (r *FormRepository) PublishFormDef(ctx context.Context, formID, changeLog, 
 	// 1. 查询当前 version 和 form_schema
 	var currentVersion int
 	var schemaJSON string
-	const selQ = `SELECT version, form_schema FROM form_definition WHERE form_id = @formID AND deleted = 0`
+	const selQ = `SELECT version, form_schema FROM workflow_form_definition WHERE form_id = @formID AND deleted = 0`
 	if err = tx.QueryRowContext(ctx, selQ, sql.Named("formID", formID)).Scan(&currentVersion, &schemaJSON); err != nil {
 		_ = tx.Rollback()
 		if err == sql.ErrNoRows {
@@ -188,7 +188,7 @@ func (r *FormRepository) PublishFormDef(ctx context.Context, formID, changeLog, 
 
 	// 2. 写入版本历史
 	const insQ = `
-INSERT INTO form_version_history (form_id, version, form_schema, change_log, created_by, created_at)
+INSERT INTO workflow_form_version_history (form_id, version, form_schema, change_log, created_by, created_at)
 VALUES (@formID, @version, @formSchema, @changeLog, @createdBy, GETDATE())`
 
 	if _, err = tx.ExecContext(ctx, insQ,
@@ -204,7 +204,7 @@ VALUES (@formID, @version, @formSchema, @changeLog, @createdBy, GETDATE())`
 
 	// 3. 更新 form_definition：version、status、updated_at
 	const updQ = `
-UPDATE form_definition
+UPDATE workflow_form_definition
 SET version    = @version,
     status     = @status,
     updated_at = GETDATE()
@@ -225,7 +225,7 @@ WHERE form_id = @formID`
 // RollbackFormDef 回滚表单到指定版本：取历史 schema，创建新版本记录，更新定义
 func (r *FormRepository) RollbackFormDef(ctx context.Context, formID string, version int, operatorID string) error {
 	// 1. 查询历史版本的 form_schema
-	const histQ = `SELECT form_schema FROM form_version_history WHERE form_id = @formID AND version = @version`
+	const histQ = `SELECT form_schema FROM workflow_form_version_history WHERE form_id = @formID AND version = @version`
 	var histSchemaJSON string
 	if err := r.db.QueryRowContext(ctx, histQ,
 		sql.Named("formID", formID),
@@ -244,7 +244,7 @@ func (r *FormRepository) RollbackFormDef(ctx context.Context, formID string, ver
 
 	// 2. 查询当前 version
 	var currentVersion int
-	const selQ = `SELECT version FROM form_definition WHERE form_id = @formID AND deleted = 0`
+	const selQ = `SELECT version FROM workflow_form_definition WHERE form_id = @formID AND deleted = 0`
 	if err = tx.QueryRowContext(ctx, selQ, sql.Named("formID", formID)).Scan(&currentVersion); err != nil {
 		_ = tx.Rollback()
 		if err == sql.ErrNoRows {
@@ -258,7 +258,7 @@ func (r *FormRepository) RollbackFormDef(ctx context.Context, formID string, ver
 
 	// 3. 写入新版本历史记录（内容为回滚目标 schema）
 	const insQ = `
-INSERT INTO form_version_history (form_id, version, form_schema, change_log, created_by, created_at)
+INSERT INTO workflow_form_version_history (form_id, version, form_schema, change_log, created_by, created_at)
 VALUES (@formID, @version, @formSchema, @changeLog, @createdBy, GETDATE())`
 
 	if _, err = tx.ExecContext(ctx, insQ,
@@ -274,7 +274,7 @@ VALUES (@formID, @version, @formSchema, @changeLog, @createdBy, GETDATE())`
 
 	// 4. 更新 form_definition 的 form_schema 和 version
 	const updQ = `
-UPDATE form_definition
+UPDATE workflow_form_definition
 SET form_schema = @formSchema,
     version     = @version,
     updated_at  = GETDATE()
@@ -296,7 +296,7 @@ WHERE form_id = @formID`
 func (r *FormRepository) GetFormVersionHistory(ctx context.Context, formID string) ([]*types.FormVersionHistory, error) {
 	const q = `
 SELECT id, form_id, version, form_schema, change_log, created_by, created_at
-FROM form_version_history
+FROM workflow_form_version_history
 WHERE form_id = @formID
 ORDER BY version DESC`
 
@@ -329,7 +329,7 @@ func (r *FormRepository) CreateFormInstance(ctx context.Context, inst *types.For
 	}
 
 	const q = `
-INSERT INTO form_instance (instance_id, form_id, form_version, workflow_instance_id, node_id, form_data, status, created_by, created_at, updated_at)
+INSERT INTO workflow_form_instance (instance_id, form_id, form_version, workflow_instance_id, node_id, form_data, status, created_by, created_at, updated_at)
 VALUES (@instanceID, @formID, @formVersion, @workflowInstanceID, @nodeID, @formData, @status, @createdBy, @createdAt, @updatedAt)`
 
 	_, err = r.db.ExecContext(ctx, q,
@@ -355,7 +355,7 @@ func (r *FormRepository) UpdateFormInstance(ctx context.Context, inst *types.For
 	}
 
 	const q = `
-UPDATE form_instance
+UPDATE workflow_form_instance
 SET form_data  = @formData,
     status     = @status,
     updated_at = GETDATE()
@@ -373,7 +373,7 @@ WHERE instance_id = @instanceID`
 func (r *FormRepository) GetFormInstance(ctx context.Context, instanceID string) (*types.FormInstance, error) {
 	const q = `
 SELECT instance_id, form_id, form_version, workflow_instance_id, node_id, form_data, status, created_by, created_at, updated_at
-FROM form_instance
+FROM workflow_form_instance
 WHERE instance_id = @instanceID`
 
 	row := r.db.QueryRowContext(ctx, q, sql.Named("instanceID", instanceID))
@@ -388,7 +388,7 @@ WHERE instance_id = @instanceID`
 func (r *FormRepository) GetFormInstanceByWorkflow(ctx context.Context, workflowInstanceID, nodeID string) (*types.FormInstance, error) {
 	const q = `
 SELECT instance_id, form_id, form_version, workflow_instance_id, node_id, form_data, status, created_by, created_at, updated_at
-FROM form_instance
+FROM workflow_form_instance
 WHERE workflow_instance_id = @workflowInstanceID AND node_id = @nodeID`
 
 	row := r.db.QueryRowContext(ctx, q,

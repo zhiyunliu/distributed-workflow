@@ -29,7 +29,7 @@ func (r *AdvancedApprovalRepository) CreateDelegate(ctx context.Context, cfg *ty
 	defer cancel()
 
 	const q = `
-INSERT INTO approval_delegate (delegator_id, agent_id, start_time, end_time, status, created_by, created_at, updated_at)
+INSERT INTO workflow_approval_delegate (delegator_id, agent_id, start_time, end_time, status, created_by, created_at, updated_at)
 VALUES (@delegatorID, @agentID, @startTime, @endTime, 1, @createdBy, GETDATE(), GETDATE())`
 
 	_, err := r.db.ExecContext(ctx, q,
@@ -49,7 +49,7 @@ func (r *AdvancedApprovalRepository) GetActiveDelegateByDelegator(ctx context.Co
 
 	const q = `
 SELECT id, delegator_id, agent_id, start_time, end_time, status
-FROM approval_delegate
+FROM workflow_approval_delegate
 WHERE delegator_id = @delegatorID
   AND status = 1
   AND start_time <= GETDATE()
@@ -82,7 +82,7 @@ func (r *AdvancedApprovalRepository) GetDelegatesByDelegator(ctx context.Context
 
 	const q = `
 SELECT id, delegator_id, agent_id, start_time, end_time, status, created_at, updated_at
-FROM approval_delegate
+FROM workflow_approval_delegate
 WHERE delegator_id = @delegatorID
 ORDER BY created_at DESC`
 
@@ -122,7 +122,7 @@ func (r *AdvancedApprovalRepository) CreateCC(ctx context.Context, record *types
 	defer cancel()
 
 	const q = `
-INSERT INTO approval_cc (workflow_instance_id, node_id, cc_user_id, cc_time, is_read)
+INSERT INTO workflow_approval_cc (workflow_instance_id, node_id, cc_user_id, cc_time, is_read)
 VALUES (@instanceID, @nodeID, @ccUserID, GETDATE(), 0)`
 
 	_, err := r.db.ExecContext(ctx, q,
@@ -138,7 +138,7 @@ func (r *AdvancedApprovalRepository) GetCCList(ctx context.Context, userID strin
 	ctx, cancel := context.WithTimeout(ctx, defaultQueryTimeout)
 	defer cancel()
 
-	const countQ = `SELECT COUNT(1) FROM approval_cc WHERE cc_user_id = @userID`
+	const countQ = `SELECT COUNT(1) FROM workflow_approval_cc WHERE cc_user_id = @userID`
 	row := r.db.QueryRowContext(ctx, countQ, sql.Named("userID", userID))
 	var total int64
 	if err := row.Scan(&total); err != nil {
@@ -151,7 +151,7 @@ func (r *AdvancedApprovalRepository) GetCCList(ctx context.Context, userID strin
 	offset := (page - 1) * pageSize
 	const listQ = `
 SELECT id, workflow_instance_id, node_id, cc_user_id, cc_time, is_read, read_time
-FROM approval_cc
+FROM workflow_approval_cc
 WHERE cc_user_id = @userID
 ORDER BY cc_time DESC
 OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY`
@@ -199,7 +199,7 @@ func (r *AdvancedApprovalRepository) MarkCCRead(ctx context.Context, ccID int64)
 	ctx, cancel := context.WithTimeout(ctx, defaultQueryTimeout)
 	defer cancel()
 
-	const q = `UPDATE approval_cc SET is_read = 1, read_time = GETDATE() WHERE id = @id`
+	const q = `UPDATE workflow_approval_cc SET is_read = 1, read_time = GETDATE() WHERE id = @id`
 	_, err := r.db.ExecContext(ctx, q, sql.Named("id", ccID))
 	return wrapDBErr(err, "MarkCCRead")
 }
@@ -215,7 +215,7 @@ func (r *AdvancedApprovalRepository) CreateAddSignRecord(ctx context.Context, re
 	}
 
 	const q = `
-INSERT INTO approval_add_sign (workflow_instance_id, node_id, operator_id, sign_type, sign_users, created_at)
+INSERT INTO workflow_approval_add_sign (workflow_instance_id, node_id, operator_id, sign_type, sign_users, created_at)
 VALUES (@instanceID, @nodeID, @operatorID, @signType, @signUsers, GETDATE())`
 
 	_, err = r.db.ExecContext(ctx, q,
@@ -235,7 +235,7 @@ func (r *AdvancedApprovalRepository) GetAddSignRecords(ctx context.Context, inst
 
 	const q = `
 SELECT id, workflow_instance_id, node_id, operator_id, sign_type, sign_users, created_at
-FROM approval_add_sign
+FROM workflow_approval_add_sign
 WHERE workflow_instance_id = @instanceID AND node_id = @nodeID`
 
 	rows, err := r.db.QueryContext(ctx, q,

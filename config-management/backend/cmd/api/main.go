@@ -16,8 +16,8 @@ import (
 	_ "github.com/microsoft/go-mssqldb"
 
 	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/dao"
-	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/handler"
-	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/service"
+	"github.com/zhiyunliu\distributed-workflow/config-management/backend/internal/handler"
+	"github.com/zhiyunliu\distributed-workflow/config-management/backend/internal/service"
 	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/sysmodel"
 	wfstore "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/storage/sqlserver"
 )
@@ -25,7 +25,7 @@ import (
 func main() {
 	dsn := envOrFatal("DB_DSN")
 	jwtSecret := envOrFatal("JWT_SECRET")
-	httpAddr := envOr("HTTP_ADDR", ":8080")
+	httpAddr := envOr("HTTP_ADDR", ":7080")
 
 	// 初始化系统管理数据库连接
 	db, err := sql.Open("sqlserver", dsn)
@@ -39,6 +39,14 @@ func main() {
 
 	// 系统管理 DAO
 	sysDB := dao.NewDB(db)
+
+	// 初始化系统数据
+	initService := service.NewInitService(sysDB.UserRepo())
+	if err := initService.InitializeSystem(nil); err != nil {
+		log.Printf("初始化系统数据失败: %v", err)
+	} else {
+		log.Println("系统数据初始化完成")
+	}
 
 	// 系统管理 Service
 	mgr := service.NewManager(
