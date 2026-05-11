@@ -1,0 +1,1166 @@
+plan_id: "20260511-replace-formcomponents-with-dynamicformeditor"
+plan_version: "2-constraint-relaxation"
+objective: "【约束变更】将 FormComponents 替换为 DynamicFormEditor，并允许 DynamicFormEditor 完全重构以分离显示层与编辑层逻辑；并行推进前后端改造，补齐 Go 侧对 schema 的兼容支持，同时确保最小兼容。"
+created_at: "2026-05-11T00:00:00+08:00"
+created_by: "gem-planner"
+status: pending
+research_confidence: high
+constraint_change_log:
+  - timestamp: "2026-05-11T16:00:00+08:00"
+    from: "DynamicFormEditor 业务逻辑保持不变，仅允许样式相关代码调整"
+    to: "允许 DynamicFormEditor 完全重构以分离显示层与编辑层逻辑"
+    rationale: "原约束导致 DynamicFormEditor 内包含编辑逻辑（addTableRow/delTableRow/submitForm）混淆职责；新约束允许通过重构明确分工：DynamicFormEditor 作纯展示层，所有编辑交互迁移至 FormDesigner"
+    impact_scope: ["T-FE-03-designer-integration", "T-FE-04-dynamicformeditor-refactor (NEW)", "T-RV-00-pre-qa-boundary-gate", "T-QA-01-compat-regression", "T-RV-01-contract-review", "T-DOC-01-migration-doc"]
+    blocking_issue: "T-RV-00 因 DynamicFormEditor 编辑逻辑冲突无法通过"
+
+plan_metrics:
+  wave_1_task_count: 4
+  total_dependencies: 19
+  risk_score: high
+
+tldr: |
+  本计划采用 5 个 Wave、12 个任务（新增 T-RV-DECISION-00 与 T-FE-04），目标将表单编辑页面的 FormComponents 替换为 DynamicFormEditor（允许完全重构以实现清晰分层）：
+  
+  架构变更：从"DynamicFormEditor 仅样式可改"升级为"完全分离显示层与编辑层"，通过新增 T-FE-04 专项重构清除职责混淆。
+  
+  - Wave 1 前后端并行完成 D6 FormService 注入就绪、Go schema 兼容契约、前端 schema 归一化适配层、路由兼容基线。
+  - Wave 2 前后端继续并行，先执行显式决策收敛 gate（T-RV-DECISION-00）冻结编辑迁移与同步契约，再完成【新增】DynamicFormEditor 逻辑分离重构（T-FE-04）→ FormDesigner 编排层通过适配器接入 DynamicFormEditor 预览渲染（T-FE-03）→ 后端入出参归一化（T-BE-02）。
+  - Wave 3 执行 pre-QA 边界审查 gate，新审查标准：确保 DynamicFormEditor 仅包含显示逻辑（v-if/v-model 分支），编辑逻辑完全迁移至 FormDesigner。
+  - Wave 4 执行兼容回归验证与正式约束审查。
+  - Wave 5 补齐迁移说明与兼容矩阵文档，重点说明新的分层架构与职责边界。
+  
+  核心理念：DynamicFormEditor 作为纯展示层（接收标准化 schema 后仅处理字段渲染和值显示），FormDesigner 为编排/编辑入口（承载所有编辑交互逻辑），适配层负责数据转换。全流程坚持最小改动：repository 与 SQL schema 零改动。
+
+open_questions: []
+
+decision_closure:
+  status: "frozen"
+  owner: "T-RV-DECISION-00"
+  output_file: "docs/plan/20260511-replace-formcomponents-with-dynamicformeditor/logs/decision-closure.yaml"
+  closed_decisions:
+    - id: "DC-EDIT-MIGRATION-01"
+      topic: "编辑逻辑迁移决议"
+      decision: "addTableRow/delTableRow/submitForm/verify 等编辑 API 从 DynamicFormEditor 完全移除，在 FormDesigner 统一承载。"
+      input_contract: "{ schema, editingData (readonly snapshot), readonly: boolean }"
+      output_contract: "FormDesigner 产出最新 editingData，驱动 DynamicFormEditor 重新渲染。"
+      payload_example:
+        schema:
+          fields:
+            - key: "tableField"
+              type: "table"
+        editingData:
+          tableField:
+            - name: "row-1"
+              value: "A"
+        readonly: true
+    - id: "DC-SYNC-MODE-02"
+      topic: "props:editingData 同步机制决议"
+      decision: "采用 v-model:editingData 双向绑定（首选），单向 props 仅作为备选不进入主链路。"
+      sync_timing: "每次用户编辑后即时同步 editingData 到展示层。"
+      persist_timing: "仅在用户显式点击保存时调用 createForm/updateForm。"
+    - id: "DC-READONLY-CONTRACT-03"
+      topic: "展示层契约决议"
+      decision: "采用方案A：DynamicFormEditor 为只读展示层。所有输入控件必须 disabled 或 readonly，不保留运行时编辑路径。"
+
+minimum_dod_checklist:
+  - "决策冻结 gate 已通过：docs/plan/20260511-replace-formcomponents-with-dynamicformeditor/logs/decision-closure.yaml 已产出并锁定 DC-EDIT-MIGRATION-01、DC-SYNC-MODE-02、DC-READONLY-CONTRACT-03。"
+  - "D6 FormService 注入状态已在运行入口校验并落地，联调链路可用。"
+  - "schema 与 formSchema 同时存在且冲突时，固定采用 schema > formSchema；仅当 schema 缺失时回退 formSchema，并有断言验证。"
+  - "输入类型边界固定为 schema:string|object 与 formSchema:string|object，并在 FE/BE/QA 三侧一致验证。"
+  - "【约束变更】DynamicFormEditor.vue 已完全转换为只读展示层：所有输入控件强制 disabled 或 readonly，零运行时编辑能力。"
+  - "编辑交互逻辑（字段增删改、表格行增删、值绑定、验证、表单提交）全部由 FormDesigner 在编排层维护，不分散到 DynamicFormEditor。"
+  - "schema-adapter.ts 中的双向映射保持不变（已验证）"
+  - "repository 与 SQL schema 零改动。"
+  - "旧路由参数 id 与标准参数 formId 均可完成加载-编辑-保存。"
+  - "最小兼容矩阵（旧字段/新字段/schema:string|object/formSchema:string|object）全部通过。"
+
+temporary_acceptance_freeze:
+  title: "临时验收口径冻结"
+  based_on: "minimum_dod_checklist"
+  execution_standard:
+    - "本计划所有实现、审查与测试任务在验收时均以 minimum_dod_checklist 为唯一执行口径。"
+    - "冲突优先级规则冻结为 schema > formSchema；仅当 schema 缺失时回退 formSchema。"
+    - "DynamicFormEditor 重构的成功标准：只读展示契约成立（所有输入控件 disabled/readonly），不包含编辑逻辑（addTableRow/delTableRow/submitForm/verify 等）。"
+    - "若任务验收标准、验证矩阵或审查结论与冻结口径不一致，视为阻断项，任务状态不得置为 completed。"
+    - "冻结口径生效范围为全计划（所有 wave、所有任务），不得在局部任务中降级或重定义。"
+
+decision_log:
+  - id: "DL-20260511-01"
+    timestamp: "2026-05-11T12:30:00+08:00"
+    decision: "冻结 schema/formSchema 冲突优先级"
+    content: "统一采用 schema > formSchema；仅当 schema 缺失时回退 formSchema。"
+    rationale: "消除 FE/BE/QA 口径歧义，确保兼容回归结果可重复且可审计。"
+    scope: ["全计划"]
+  - id: "DL-20260511-02"
+    timestamp: "2026-05-11T12:30:00+08:00"
+    decision: "冻结 pre-QA gate 产物模板"
+    content: "T-RV-00 必须输出 docs/plan/20260511-replace-formcomponents-with-dynamicformeditor/logs/gate-report.yaml，字段固定为：范围检查、冲突规则一致性、越界改动检查、结论、阻断项。"
+    rationale: "确保 gate 结果结构化、可追溯并可用于 QA 前阻断判定。"
+    scope: ["T-RV-00-pre-qa-boundary-gate", "T-QA-01-compat-regression"]
+  - id: "DL-20260511-03"
+    timestamp: "2026-05-11T12:30:00+08:00"
+    decision: "冻结临时验收口径"
+    content: "本阶段验收统一基于 minimum_dod_checklist 执行，出现冲突以冻结口径优先。"
+    rationale: "在复杂改造期间控制验收漂移，保障计划可执行性。"
+    scope: ["全计划"]
+  - id: "DL-20260511-04"
+    timestamp: "2026-05-11T14:00:00+08:00"
+    decision: "明确 DynamicFormEditor 职责分层（弃用原约束，允许完全重构）"
+    content: "基于用户新授权，允许 DynamicFormEditor 完全重构以实现纯展示层。新约束：DynamicFormEditor 仅包含字段渲染与值显示逻辑（v-if/v-model），删除所有编辑交互（addTableRow/delTableRow/submitForm/verify 等）；所有编辑交互逻辑由 FormDesigner 编排层承载。"
+    rationale: "原约束导致 DynamicFormEditor 职责混淆（既做展示又做编辑），新约束通过完全重构实现清晰分工，提高可维护性与可测试性，同时确保设计器主链路的功能完整性。"
+    scope: ["T-FE-03-designer-integration", "T-FE-04-dynamicformeditor-refactor", "T-RV-00-pre-qa-boundary-gate", "T-QA-01-compat-regression", "T-RV-01-contract-review", "T-DOC-01-migration-doc"]
+    related_constraints: ["minimum_dod_checklist"]
+  - id: "DL-20260511-05"
+    timestamp: "2026-05-11T18:00:00+08:00"
+    decision: "冻结 Wave 2 前置决策 gate"
+    content: "新增 T-RV-DECISION-00 作为 Wave 2 启动前置。T-FE-04 与 T-FE-03 仅在 decision-closure.yaml 通过后执行。"
+    rationale: "消除未决即执行风险，确保实现口径与展示层契约一致。"
+    scope: ["T-RV-DECISION-00", "T-FE-04-dynamicformeditor-refactor", "T-FE-03-designer-integration"]
+
+gaps:
+  - description: "docs/PRD.yaml 在仓库中不存在，范围与验收依据主要来自用户澄清与研究文件。"
+    refinement_requests:
+      - query: "若存在外部 PRD，请补充表单设计器链路的最终交互验收口径。"
+        source_hint: "产品文档仓或项目 wiki"
+  - description: "Windows 环境下基于 grep 的 gate 验证不稳定，需统一为跨平台检查。"
+    refinement_requests:
+      - query: "在 T-RV-00/T-RV-01 使用 ESLint 规则或 Node AST 脚本替代 grep。"
+        source_hint: "config-management/frontend lint/verification pipeline"
+
+pre_mortem:
+  overall_risk_level: high
+  critical_failure_modes:
+    - scenario: "DynamicFormEditor 重构时遗漏关键显示逻辑，导致编辑后的字段数据无法正确渲染"
+      likelihood: medium
+      impact: critical
+      mitigation: "T-FE-04 定义显示逻辑的显式白名单（哪些方法/分支保留）；T-QA-01 补充字段显示与编辑关键路径的回归场景。"
+    - scenario: "编辑逻辑迁移至 FormDesigner 时遗漏验证或错误处理逻辑，导致表单保存失败"
+      likelihood: medium
+      impact: high
+      mitigation: "T-FE-04 与 T-FE-03 需要协同梳理编辑方法的完整功能清单；code review 时强制校验每个移出的方法的目标承载地。"
+    - scenario: "D6 FormService 未注入或注入顺序错误，导致 /api/forms 运行时空服务"
+      likelihood: medium
+      impact: critical
+      mitigation: "新增 T-BE-00 前置任务显式校验并落地注入，T-BE-02/T-QA-01 强依赖该任务。"
+    - scenario: "前端只做单向归一化，导致保存后 schema 回写与旧数据不兼容"
+      likelihood: medium
+      impact: high
+      mitigation: "T-FE-01 定义双向映射规则；T-QA-01 增加字符串/对象/旧字段三类样例回归。"
+    - scenario: "Go 层新增 schema 别名字段后出现 formSchema/schema 冲突覆盖"
+      likelihood: medium
+      impact: high
+      mitigation: "T-BE-01/T-FE-01/T-BE-02/T-QA-01 全面冻结并验证 schema > formSchema（仅 schema 缺失时回退 formSchema）；T-BE-02 在 handler 层统一归一化。"
+    - scenario: "路由参数不一致导致设计器编辑页读不到 formId"
+      likelihood: high
+      impact: medium
+      mitigation: "T-FE-02 保留旧路径兼容并统一参数解析；T-QA-01 执行路由链路验证。"
+    - scenario: "编辑交互逻辑在重构时分散在 DynamicFormEditor 与 FormDesigner，导致职责边界不清"
+      likelihood: high
+      impact: high
+      mitigation: "T-FE-04 完成后需要 T-RV-00 与 T-RV-01 的边界审查强制确认 DynamicFormEditor 仅含显示逻辑（v-if/v-model）；T-DOC-01 明确文档说明三层架构与职责边界。"
+  assumptions:
+    - "本次替换范围仅覆盖表单设计器/编辑器主链路的渲染层替换，不扩展到其他页面。"
+    - "【约束变更】DynamicFormEditor 将完全重构为纯展示层，仅接收标准化 schema 后完成字段展示与值显示，所有编辑交互逻辑（addTableRow/delTableRow/submitForm/verify）迁移至 FormDesigner。"
+    - "DynamicFormEditor 重构删除的方法（addTableRow/delTableRow/submitForm/verify）将被完整迁移至 FormDesigner，保证设计器功能无退化。"
+    - "schema-adapter.ts 的双向映射保持不变（已验证）。"
+    - "repository 层 form_schema 持久化逻辑与 SQL 字段不做变更。"
+    - "前端允许新增 schema 归一化适配层来桥接历史数据与新渲染层。"
+    - "FormDesigner 作为编排/编辑入口，承载所有表单编辑交互逻辑（字段增删改、表格行增删、值绑定、验证等）。"
+
+implementation_specification:
+  architecture_overview: |
+    本方案采用"编排 + 适配 + 展示"三层架构（允许 DynamicFormEditor 完全重构）：
+    
+    1. FormDesigner（编排层）：承载表单编辑交互逻辑，与用户直接交互，管理编辑状态、保存、发布等流程；包含所有表单编辑方法（字段增删改、表格行增删、验证、提交等）；
+    
+    2. 适配层（双向映射）：前端负责 schema/formSchema 归一化，Go 层在边界执行 schema 别名兼容和冲突优先级处理；
+    
+    3. DynamicFormEditor（展示层）：【新约束】完全重构为纯显示组件，接收标准化后的 schema 与 readonly flag，仅处理字段展示与值显示（v-if/v-model 分支），不包含任何编辑交互逻辑。
+    
+  data_flow: |
+    加载流程：
+      后端返回 schema(json) --> 前端适配层标准化 --> DynamicFormEditor 纯展示渲染
+    
+    保存流程（所有编辑逻辑在 FormDesigner）：
+      FormDesigner 编辑收集（addTableRow/delTableRow/submitForm/verify 等） --> 前端适配层逆向映射 --> 后端适配层归一化 --> 存储
+  
+  code_structure: |
+    采用"逻辑迁移 + 适配层 + 最小兼容契约"方案：
+    
+    1) T-FE-04 DynamicFormEditor 重构：删除所有编辑方法（addTableRow/delTableRow/submitForm/verify）与业务逻辑判断，仅保留字段渲染与值显示（v-if/v-model 分支）；
+    2) T-FE-03 FormDesigner 接线：完整迁移 DynamicFormEditor 删除的编辑方法至 FormDesigner，通过适配层将标准化 schema 传递给 DynamicFormEditor 用于预览展示；
+    3) 前端新增 schema 归一化工具，负责 old(name/type/options) <-> editor(key/type/commonApi/columns) 转换；
+    4) Go 类型层补齐 schema 别名兼容字段及归一化方法（T-BE-01）；
+    5) Go handler/service 边界执行入参/出参归一化，不触碰 repository map+JSON 持久化（T-BE-02）。
+    
+  affected_areas:
+    - "config-management/frontend/src/components/DynamicFormEditor.vue (重构：删除编辑逻辑，仅保留展示)"
+    - "config-management/frontend/src/views/FormDesigner.vue (新增：迁移编辑逻辑)"
+    - "config-management/frontend/src/views/FormList.vue"
+    - "config-management/frontend/src/router/index.ts"
+    - "config-management/frontend/src/api/form.ts"
+    - "config-management/frontend/src/types/form.ts"
+    - "config-management/frontend/src/utils/ (新增 schema 适配工具)"
+    - "runtime-execution/pkg/types/form_types.go"
+    - "runtime-execution/internal/common/types/form_types.go"
+    - "config-management/backend/internal/handler/server_d6_form.go"
+    - "runtime-execution/internal/engine/form_service.go"
+    
+  component_details:
+    - component: "DynamicFormEditor（展示层）【约束变更】"
+      responsibility: "【新约束】完全重构为纯显示组件；接收标准化 schema 与 readonly flag 后，仅处理字段展示与值显示（v-if/v-model 分支）；删除所有编辑交互逻辑（addTableRow/delTableRow/submitForm/verify 等）"
+      key_constraint: "仅包含显示逻辑，不包含任何编辑交互"
+      deletion_checklist: ["addTableRow 方法", "delTableRow 方法", "submitForm 方法", "verify/validate 逻辑", "onInput 编辑事件处理", "所有编辑相关的 v-on:click 指令"]
+      retained_methods: ["onMounted (读取初始化数据)", "loadAllOptions (填充下拉选项)", "getRules (获取验证规则用于显示提示)", "字段渲染的 v-if/v-model", "值显示与格式化"]
+      interfaces: ["v-model:schema for field rendering", "props:readonly (强制只读)", "props:editingData (可选，用于与 FormDesigner 同步显示)"]
+      dependencies:
+        - component: "FormDesigner"
+          relationship: "被 FormDesigner 编排层使用，接收编辑结果通过 editingData 同步更新展示"
+      integration_points: ["实时字段展示", "编辑后值同步显示", "发布前预览验证"]
+    - component: "FormDesigner（编排层）【需迁移逻辑】"
+      responsibility: "表单编辑入口；管理编辑交互逻辑、状态管理、保存/发布流程；【新增】完整承载 DynamicFormEditor 删除的编辑方法（addTableRow/delTableRow/submitForm/verify）；通过适配层与 DynamicFormEditor 交互"
+      key_responsibility: "所有表单编辑、字段添加/修改/删除、表格行增删、验证、提交等交互逻辑均在此层实现，DynamicFormEditor 仅负责展示"
+      migrated_methods_from_dynamicformeditor: ["addTableRow", "delTableRow", "submitForm", "verify/validate"]
+    - component: "前端 schema 归一化适配层"
+      responsibility: "统一处理 schema:string|object、formSchema:string|object、name/key、旧 type 与标准化 type 的双向映射；作为 FormDesigner 与 DynamicFormEditor 之间的转接器"
+      interfaces: ["normalizeToDynamicSchema(input) -> DynamicSchema", "normalizeToPersistedSchema(input) -> PersistedSchema"]
+      dependencies:
+        - component: "FormDesigner"
+          relationship: "被调用（在加载与保存时调用）"
+        - component: "DynamicFormEditor"
+          relationship: "向其提供标准化 schema 数据"
+      integration_points: ["表单加载", "表单保存", "表单发布"]
+    - component: "Go 表单定义兼容契约"
+      responsibility: "补齐 schema 别名字段并在边界层执行归一化，保持 repository 不变"
+      interfaces: ["FormDefinition.NormalizeSchema()", "FormDefinition.EffectiveSchema()"]
+      dependencies:
+        - component: "D6 Form Handler"
+          relationship: "调用归一化"
+        - component: "FormService"
+          relationship: "二次兜底"
+      integration_points: ["POST /api/forms", "PUT /api/forms/:id", "GET /api/forms/:id"]
+    - component: "路由兼容层"
+      responsibility: "统一 forms/designer 参数读取并兼容历史路径/参数命名"
+      interfaces: ["route param resolver(formId|id)"]
+      dependencies:
+        - component: "FormList"
+          relationship: "导航发起"
+        - component: "FormDesigner"
+          relationship: "参数消费"
+      integration_points: ["列表页进入设计器", "直接 URL 打开设计器"]
+
+contracts:
+  - from_task: "T-RV-DECISION-00"
+    to_task: "T-FE-04-dynamicformeditor-refactor"
+    interface: "决策冻结产物 decision-closure.yaml（编辑逻辑迁移、同步机制、只读展示契约）"
+    format: "decision gate contract"
+  - from_task: "T-RV-DECISION-00"
+    to_task: "T-FE-03-designer-integration"
+    interface: "v-model:editingData 双向同步与保存时机冻结口径"
+    format: "frontend interaction contract"
+  - from_task: "T-BE-00-d6-formservice-injection"
+    to_task: "T-BE-02-handler-normalization"
+    interface: "D6 FormService 已注入并可被 handler/service 使用"
+    format: "Go app bootstrap wiring contract"
+  - from_task: "T-BE-00-d6-formservice-injection"
+    to_task: "T-QA-01-compat-regression"
+    interface: "D6 表单 API 运行前置条件满足"
+    format: "runtime readiness gate"
+  - from_task: "T-FE-01-schema-adapter"
+    to_task: "T-FE-04-dynamicformeditor-refactor"
+    interface: "schema 结构标准化定义，normalizeToDynamicSchema 函数签名"
+    format: "TypeScript interface + function contract"
+  - from_task: "T-FE-04-dynamicformeditor-refactor"
+    to_task: "T-FE-03-designer-integration"
+    interface: "DynamicFormEditor 已删除所有编辑逻辑，仅支持 v-model:schema 展示与 props:editingData 值同步"
+    format: "Vue component interface"
+  - from_task: "T-FE-01-schema-adapter"
+    to_task: "T-FE-03-designer-integration"
+    interface: "normalizeToDynamicSchema / normalizeToPersistedSchema / getConflictResolution"
+    format: "TypeScript function + typed schema contract"
+  - from_task: "T-FE-02-route-compat"
+    to_task: "T-FE-03-designer-integration"
+    interface: "统一路由参数 formId 解析结果"
+    format: "vue-router route params"
+  - from_task: "T-BE-01-type-contract-compat"
+    to_task: "T-BE-02-handler-normalization"
+    interface: "FormDefinition schema/formSchema 兼容字段与归一化方法"
+    format: "Go struct + methods"
+  - from_task: "T-FE-03-designer-integration"
+    to_task: "T-RV-00-pre-qa-boundary-gate"
+    interface: "实现侧 DynamicFormEditor（纯展示） + FormDesigner（编辑）的清晰分工"
+    format: "boundary checklist + diff evidence"
+  - from_task: "T-BE-02-handler-normalization"
+    to_task: "T-RV-00-pre-qa-boundary-gate"
+    interface: "实现侧边界清单（repository 零改动、SQL schema 零改动）"
+    format: "boundary checklist + diff evidence"
+  - from_task: "T-RV-00-pre-qa-boundary-gate"
+    to_task: "T-QA-01-compat-regression"
+    interface: "Pre-QA 越界审查通过，确认 DynamicFormEditor 仅有展示逻辑"
+    format: "gate decision"
+  - from_task: "T-FE-03-designer-integration"
+    to_task: "T-QA-01-compat-regression"
+    interface: "设计器链路可加载/编辑/保存/发布 Dynamic schema（编辑逻辑由 FormDesigner 承载）"
+    format: "UI flow + HTTP payload"
+
+tasks:
+  - id: "T-BE-00-d6-formservice-injection"
+    title: "校验并落地 D6 FormService 注入状态（前置阻塞项）"
+    description: |
+      在运行入口校验并落地 D6 FormService 注入状态，作为后续后端归一化与 QA 的硬前置：
+      1) 检查 config-management/backend/cmd/api/main.go 的 D6 FormService 初始化与注入顺序；
+      2) 若缺失或顺序不正确，修订 wiring 使 /api/forms 运行时可用；
+      3) 输出可复核的注入证据（启动日志/最小调用验证）。
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: ["运行时注入就绪", "阻塞项清除"]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "config-management/backend/cmd/api/main.go"
+        description: "API 运行入口与服务注入"
+      - path: "config-management/backend/internal/handler/server_d6_form.go"
+        description: "D6 表单 handler 使用点"
+      - path: "runtime-execution/internal/engine/form_service.go"
+        description: "D6 FormService 实现"
+    diagnosis:
+      root_cause: "研究结论指出注入状态不确定，可能导致后续契约与联调全部失效"
+      fix_recommendations: "将注入校验前置为独立阻塞任务并固化验证证据"
+      injected_at: "2026-05-11T00:00:00+08:00"
+    planning_pass: 2
+    planning_history:
+      - pass: 1
+        reason: "初版计划以 open question 记录，未转化为执行阻塞任务"
+        timestamp: "2026-05-11T00:00:00+08:00"
+      - pass: 2
+        reason: "依据 critic 反馈，将注入校验升级为强前置任务"
+        timestamp: "2026-05-11T12:00:00+08:00"
+    estimated_effort: small
+    estimated_files: 3
+    estimated_lines: 120
+    focus_area: "backend bootstrap wiring"
+    verification:
+      - "go test ./config-management/backend/internal/handler -run D6Form -count=1"
+      - "启动 API 后调用 /api/forms 健康路径，确认无空服务错误"
+    acceptance_criteria:
+      - "D6 FormService 在运行入口完成注入且初始化顺序正确"
+      - "T-BE-02 与 T-QA-01 可将该任务作为硬前置依赖"
+      - "注入状态有可复核证据（日志或最小调用）"
+    failure_modes:
+      - scenario: "仅检查编译通过，未验证运行时实例导致空指针"
+        likelihood: medium
+        impact: high
+        mitigation: "补充最小运行时调用验证并检查日志"
+      - scenario: "注入顺序错误导致部分路由初始化失败"
+        likelihood: medium
+        impact: medium
+        mitigation: "固定初始化顺序并在 handler 测试中覆盖"
+    tech_stack: ["Go", "Gin", "runtime-execution"]
+    test_coverage: "注入链路冒烟 + handler 最小用例"
+
+  - id: "T-BE-01-type-contract-compat"
+    title: "补齐 Go FormDefinition 的 schema 别名兼容契约"
+    description: |
+      在 Go 类型层补齐 schema 别名能力，且不改变 repository 的 FormSchema(map) 持久化语义：
+      1) 为 FormDefinition 增加兼容字段（或序列化兼容策略）以支持 schema:string|object 与 formSchema:string|object 双输入；
+      2) 增加归一化方法，明确冲突优先级；
+      3) 同步 pkg/types 与 internal/common/types 两份镜像定义。
+      来源依据：research_findings_runtime-execution_config-management-backend.yaml。
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: ["Go 契约兼容", "最小兼容"]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "docs/plan/20260511-replace-formcomponents-with-dynamicformeditor/research_findings_runtime-execution_config-management-backend.yaml"
+        description: "后端 schema 缺口与持久化约束"
+      - path: "runtime-execution/pkg/types/form_types.go"
+        description: "对外类型定义"
+      - path: "runtime-execution/internal/common/types/form_types.go"
+        description: "内部镜像类型定义"
+    diagnosis:
+      root_cause: "Go 契约仅有 formSchema，无法直接兼容前端 schema 别名输入"
+      fix_recommendations: "在类型层增加别名兼容与统一归一化方法，保持仓储层不变"
+      injected_at: "2026-05-11T00:00:00+08:00"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "基于后端研究结论建立首版兼容契约任务"
+        timestamp: "2026-05-11T00:00:00+08:00"
+    estimated_effort: medium
+    estimated_files: 2
+    estimated_lines: 140
+    focus_area: "runtime-execution types"
+    verification:
+      - "go test ./runtime-execution/pkg/types ./runtime-execution/internal/common/types"
+      - "go test ./runtime-execution/internal/engine -run Form -count=1"
+      - "构造 schema 与 formSchema 同时存在且冲突样例，断言固定优先级为 schema > formSchema；仅 schema 缺失时回退 formSchema"
+    acceptance_criteria:
+      - "FormDefinition 可稳定解析 schema:string|object 与 formSchema:string|object"
+      - "冲突场景固定采用 schema > formSchema；仅当 schema 缺失时回退 formSchema，并在代码中体现"
+      - "schema 与 formSchema 冲突样例有固定优先级断言且与前端一致"
+      - "未改动 repository 与 SQL schema 字段"
+    failure_modes:
+      - scenario: "仅修改一份类型定义，导致 pkg 与 internal/common 不一致"
+        likelihood: medium
+        impact: high
+        mitigation: "同任务同步修改并执行双包测试"
+      - scenario: "归一化优先级不明确导致行为漂移"
+        likelihood: medium
+        impact: medium
+        mitigation: "将优先级写入方法注释与测试断言"
+    tech_stack: ["Go", "runtime-execution"]
+    test_coverage: "新增/补充类型归一化单测"
+
+  - id: "T-FE-01-schema-adapter"
+    title: "新增前端 schema 归一化适配层（双向）"
+    description: |
+      新增前端适配层，处理 DynamicFormEditor 与历史 schema 的结构差异：
+      1) 读取链路：兼容 schema:string|object 与 formSchema:string|object，并归一化到 key/type/commonApi/columns；
+      2) 保存链路：将编辑结果归一化为后端可接受结构并保持最小兼容；
+      3) 补齐 TypeScript 类型定义，避免 any。
+      来源依据：research_findings_config-management-frontend.yaml。
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: ["前端归一化", "最小兼容"]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "docs/plan/20260511-replace-formcomponents-with-dynamicformeditor/research_findings_config-management-frontend.yaml"
+        description: "前端 schema 不一致问题定位"
+      - path: "config-management/frontend/src/types/form.ts"
+        description: "表单类型定义"
+      - path: "config-management/frontend/src/api/form.ts"
+        description: "表单 API 封装"
+    diagnosis:
+      root_cause: "历史字段 name/type 与 DynamicFormEditor 期望 key/type 不一致，且 schema string/object 混用"
+      fix_recommendations: "通过独立 adapter 完成双向归一化，避免在组件内散落兼容逻辑"
+      injected_at: "2026-05-11T00:00:00+08:00"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "将结构映射风险前置到独立任务"
+        timestamp: "2026-05-11T00:00:00+08:00"
+    estimated_effort: medium
+    estimated_files: 3
+    estimated_lines: 220
+    focus_area: "config-management frontend adapter"
+    verification:
+      - "cd config-management/frontend && pnpm lint"
+      - "cd config-management/frontend && pnpm build"
+      - "前端适配层冲突样例断言：schema 与 formSchema 并存且冲突时固定为 schema > formSchema；仅 schema 缺失时回退 formSchema"
+    acceptance_criteria:
+      - "可兼容读取 schema(string|object) 与 formSchema(string|object)"
+      - "输出给 DynamicFormEditor 的结构满足 key/type/commonApi/columns 契约"
+      - "schema 与 formSchema 冲突时固定采用 schema > formSchema；仅当 schema 缺失时回退 formSchema，且与后端一致"
+      - "保存前转换后不破坏旧数据最小字段集"
+    failure_modes:
+      - scenario: "仅做单向映射，保存后历史页面无法识别"
+        likelihood: medium
+        impact: high
+        mitigation: "双向映射函数成对实现并加样例断言"
+      - scenario: "类型定义遗漏导致 TS 严格模式报错"
+        likelihood: medium
+        impact: medium
+        mitigation: "同步补齐 src/types/form.ts 并执行构建验证"
+    tech_stack: ["Vue3", "TypeScript", "Element Plus"]
+    test_coverage: "添加适配函数单测或最小样例断言"
+
+  - id: "T-FE-02-route-compat"
+    title: "统一设计器路由参数并保留历史路径兼容"
+    description: |
+      修正 forms/designer 链路中的路径与参数不一致问题：
+      1) 统一使用 formId 参数；
+      2) 保留旧参数 id 的兜底解析；
+      3) 确保列表页跳转与直接 URL 访问均可编辑同一表单。
+      来源依据：research_findings_config-management-frontend.yaml。
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: ["路由兼容", "编辑器主链路"]
+    priority: medium
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "config-management/frontend/src/router/index.ts"
+        description: "设计器路由定义"
+      - path: "config-management/frontend/src/views/FormList.vue"
+        description: "设计器跳转入口"
+      - path: "config-management/frontend/src/views/FormDesigner.vue"
+        description: "路由参数消费"
+    diagnosis:
+      root_cause: "路由定义使用 :formId，但页面存在按 id 读取的旧逻辑"
+      fix_recommendations: "统一主参数并保留兼容兜底"
+      injected_at: "2026-05-11T00:00:00+08:00"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "将路由问题前置，降低后续联调噪音"
+        timestamp: "2026-05-11T00:00:00+08:00"
+    estimated_effort: small
+    estimated_files: 3
+    estimated_lines: 90
+    focus_area: "frontend router"
+    verification:
+      - "cd config-management/frontend && pnpm lint"
+      - "cd config-management/frontend && pnpm dev"
+    acceptance_criteria:
+      - "从列表页进入设计器始终带 formId"
+      - "直接访问历史 URL 仍能正确解析目标表单"
+      - "不引入新的 404 或空白页"
+    failure_modes:
+      - scenario: "仅改路由定义未改消费端，导致参数读取失败"
+        likelihood: medium
+        impact: medium
+        mitigation: "路由定义/跳转/消费三点同改并联调"
+    tech_stack: ["Vue Router", "TypeScript"]
+    test_coverage: "路由跳转与参数解析冒烟"
+
+  - id: "T-RV-DECISION-00"
+    title: "Wave 2 决策收敛 gate（冻结编辑迁移与只读契约）"
+    description: |
+      在 Wave 2 开始前执行显式决策收敛，冻结两个 critical 决策并产出可执行契约：
+
+      1) 冻结编辑逻辑迁移决议：
+         - addTableRow/delTableRow/submitForm/verify 从 DynamicFormEditor 完全移除；
+         - 在 FormDesigner 统一承载并维护；
+         - 输入契约：{ schema, editingData (readonly snapshot), readonly: boolean }；
+         - 输出契约：FormDesigner 返回最新 editingData，驱动 DynamicFormEditor 重渲染。
+
+      2) 冻结 props:editingData 同步机制决议：
+         - 主方案采用 v-model:editingData 双向绑定；
+         - 同步时机为每次用户操作后即时同步；
+         - 持久化时机为用户显式点击保存后才调用 createForm/updateForm。
+
+      3) 冻结展示层契约（方案A）：
+         - DynamicFormEditor 为只读展示层；
+         - 所有输入控件必须强制 disabled 或 readonly；
+         - 不允许任何运行时编辑路径。
+
+      4) 输出固定产物：docs/plan/20260511-replace-formcomponents-with-dynamicformeditor/logs/decision-closure.yaml。
+    wave: 2
+    agent: gem-reviewer
+    prototype: false
+    covers: ["decision gate", "Wave2 启动前置", "只读契约冻结"]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: ["T-FE-01-schema-adapter", "T-FE-02-route-compat"]
+    conflicts_with: []
+    context_files:
+      - path: "docs/plan/20260511-replace-formcomponents-with-dynamicformeditor/plan-v2-constraint-relaxation.yaml"
+        description: "决策冻结与任务依赖定义"
+      - path: "config-management/frontend/src/components/DynamicFormEditor.vue"
+        description: "确认编辑逻辑待迁移清单"
+      - path: "config-management/frontend/src/views/FormDesigner.vue"
+        description: "确认编辑逻辑承载位"
+    diagnosis:
+      root_cause: "关键决策未冻结即进入实现，导致 T-FE-04/T-FE-03 口径不一致并产生阻塞风险。"
+      fix_recommendations: "先冻结决策与契约，再启动 Wave 2 的实现任务。"
+      injected_at: "2026-05-11T18:00:00+08:00"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "依据 critic 阻塞项新增显式决策 gate"
+        timestamp: "2026-05-11T18:00:00+08:00"
+    estimated_effort: small
+    estimated_files: 2
+    estimated_lines: 120
+    focus_area: "decision convergence"
+    verification:
+      - "产出 docs/plan/20260511-replace-formcomponents-with-dynamicformeditor/logs/decision-closure.yaml"
+      - "decision-closure.yaml 包含 DC-EDIT-MIGRATION-01、DC-SYNC-MODE-02、DC-READONLY-CONTRACT-03 三项冻结决议"
+      - "T-FE-04 与 T-FE-03 的 dependencies 均包含 T-RV-DECISION-00"
+    acceptance_criteria:
+      - "两个 critical 决策完成冻结，open_questions 保持为空"
+      - "只读展示契约明确为方案A，且作为 T-FE-04 验收前置"
+      - "产物 decision-closure.yaml 可被 T-FE-04/T-FE-03 直接消费"
+      - "决策冻结未通过时，Wave 2 实现任务不得启动"
+    failure_modes:
+      - scenario: "决议文本冻结但未落到任务契约，实施阶段再次歧义"
+        likelihood: medium
+        impact: high
+        mitigation: "通过 contracts + dependencies + requires_approval 三处同时绑定"
+      - scenario: "只冻结迁移，不冻结只读契约，导致展示层仍可编辑"
+        likelihood: medium
+        impact: high
+        mitigation: "在 decision-closure.yaml 中强制包含 DC-READONLY-CONTRACT-03"
+    requires_review: true
+    review_depth: full
+    review_security_sensitive: false
+
+  - id: "T-FE-04-dynamicformeditor-refactor"
+    title: "【新增】DynamicFormEditor 逻辑分离重构（纯展示层）"
+    description: |
+      【约束变更的核心任务】基于新授权，对 DynamicFormEditor 进行完全重构以实现纯展示层与 FormDesigner 的清晰分工：
+      
+      1) 【删除】所有编辑交互逻辑：
+         - 删除 addTableRow 方法（表格行新增）
+         - 删除 delTableRow 方法（表格行删除）
+         - 删除 submitForm 方法（表单提交）
+         - 删除 verify/validate 相关逻辑（表单验证）
+         - 删除所有 @change/@blur/@input 编辑事件监听
+         - 删除编辑状态相关的 data 属性（editingData、tempData 等）
+      
+      2) 【保留并优化】纯展示逻辑：
+         - 保留 onMounted 初始化（用于初始化显示数据）
+         - 保留 loadAllOptions 方法（用于填充下拉选项）
+         - 保留 getRules 方法（用于获取验证规则供显示提示使用）
+         - 保留字段渲染的 v-if/v-model 展示分支
+         - 新增 props:editingData（可选，用于与 FormDesigner 同步编辑后的值）
+         - 新增 props:readonly 标记（强制只读模式）
+      
+      3) 【确保功能完整性】：迁移删除的编辑方法至 FormDesigner，保证设计器编辑能力无退化。
+      
+      4) 【验证边界】：确保重构后 DynamicFormEditor.vue 中：
+         - 无 form.addTableRow/delTableRow/submitForm 调用
+         - 无编辑相关的 v-on:change/@input/@blur 指令（仅 v-model 用于显示）
+         - 无编辑状态管理代码
+         - 无 API 调用（获取数据由 FormDesigner 负责）
+    
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: ["逻辑分离重构", "纯展示层实现"]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: ["T-FE-01-schema-adapter", "T-RV-DECISION-00"]
+    requires_approval: "T-RV-DECISION-00_pass"
+    conflicts_with: ["T-FE-03-designer-integration"]
+    context_files:
+      - path: "config-management/frontend/src/components/DynamicFormEditor.vue"
+        description: "编辑交互逻辑需要删除的组件"
+      - path: "config-management/frontend/src/views/FormDesigner.vue"
+        description: "编辑方法的迁移目标"
+    diagnosis:
+      root_cause: "原约束要求 DynamicFormEditor 仅样式可改，导致编辑逻辑混淆在展示层中，职责不清。新授权允许完全重构以实现分离。"
+      fix_recommendations: "删除所有编辑交互逻辑，保留纯展示分支，迁移编辑方法至 FormDesigner，确保两层职责清晰。"
+      injected_at: "2026-05-11T16:00:00+08:00"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "约束变更，新增重构任务以解决逻辑混淆"
+        timestamp: "2026-05-11T16:00:00+08:00"
+    estimated_effort: large
+    estimated_files: 2
+    estimated_lines: 280
+    focus_area: "frontend component refactoring"
+    verification:
+      - "cd config-management/frontend && pnpm lint"
+      - "cd config-management/frontend && pnpm build"
+      - "执行 ESLint 自定义只读规则（no-dfe-edit-path）通过：禁止 DynamicFormEditor 中出现 addTableRow/delTableRow/submitForm/verify 与 @change/@input/@submit 绑定"
+      - "执行 Node AST 校验脚本（verify-dfe-readonly-contract）通过：所有输入控件均设置 disabled 或 readonly"
+      - "产出 docs/plan/20260511-replace-formcomponents-with-dynamicformeditor/logs/T-FE-04-deletion-checklist.md"
+      - "产出 docs/plan/20260511-replace-formcomponents-with-dynamicformeditor/logs/T-FE-04-migration-mapping.md"
+      - "产出 docs/plan/20260511-replace-formcomponents-with-dynamicformeditor/logs/T-FE-04-regression-test.ts（至少2个展示回归用例）"
+      - "产出 docs/plan/20260511-replace-formcomponents-with-dynamicformeditor/logs/T-FE-04-readonly-contract-validation.md"
+      - "通过中间 gate：T-FE-04-after-deletion-gate（删除后 DynamicFormEditor 仍可编译且可渲染）"
+    acceptance_criteria:
+      - "DynamicFormEditor 删除所有编辑交互逻辑（addTableRow/delTableRow/submitForm/verify）"
+      - "DynamicFormEditor 保留所有展示逻辑（onMounted/loadAllOptions/getRules + v-if/v-model 分支）"
+      - "DynamicFormEditor 新增 props:editingData 与 props:readonly 以支持与 FormDesigner 的值同步与只读模式"
+      - "所有输入控件（el-input/el-select/el-checkbox 等）均强制 disabled 或 readonly，不存在用户可直接编辑路径"
+      - "DynamicFormEditor 不得引入 @change/@input/@submit 等编辑事件绑定"
+      - "删除的编辑方法已完整迁移至 FormDesigner（由 T-FE-03 负责，本任务产物应明确列出迁移清单）"
+      - "编译与 lint 通过"
+      - "code diff 纯粹为删除编辑逻辑 + 新增显示相关 props，无混合改动"
+      - "T-FE-04-after-deletion-gate 通过"
+    failure_modes:
+      - scenario: "重构时遗漏关键显示逻辑导致字段无法显示"
+        likelihood: medium
+        impact: high
+        mitigation: "在接受删除前，明确列出保留白名单（onMounted/loadAllOptions/getRules + v-if/v-model）；code review 时逐一校验"
+      - scenario: "删除的编辑方法未完整迁移至 FormDesigner 导致编辑功能丧失"
+        likelihood: high
+        impact: high
+        mitigation: "T-FE-04 输出「删除清单 + 迁移清单」，T-FE-03 强制校验迁移完成，T-QA-01 验证编辑功能完整"
+      - scenario: "误删显示相关逻辑（如 getRules 方法）导致验证提示不显示"
+        likelihood: medium
+        impact: medium
+        mitigation: "将保留清单写入注释，code review 时重点关注"
+    tech_stack: ["Vue3", "TypeScript", "Element Plus"]
+    test_coverage: "组件单测（若现有）确认删除不破坏展示；端到端测试由 T-QA-01 覆盖"
+
+  - id: "T-FE-03-designer-integration"
+    title: "将 FormDesigner 编排层接入 DynamicFormEditor 展示渲染（含编辑逻辑迁移）"
+    description: |
+      在 DynamicFormEditor 完成纯展示层重构的基础上（T-FE-04），完成 FormDesigner 对接并接收迁移的编辑逻辑：
+      
+      1) 接收 T-FE-04 迁移的编辑方法：
+         - 接收 addTableRow 方法（在 FormDesigner 中重新实现表格行新增）
+         - 接收 delTableRow 方法（在 FormDesigner 中重新实现表格行删除）
+         - 接收 submitForm 方法（在 FormDesigner 中重新实现表单提交）
+         - 接收验证逻辑（在 FormDesigner 中完整实现验证）
+      
+      2) FormDesigner 通过适配层将标准化 schema 传递给 DynamicFormEditor 用于展示预览；
+      
+      3) FormDesigner 维护编辑状态与交互流程（字段值变更、表格行增删、保存、发布等）；
+      
+      4) 通过 props:editingData 与 props:readonly 实现 FormDesigner 与 DynamicFormEditor 的值同步与显示模式切换；
+      
+      5) 移除/停用 FormComponents 在主链路中的依赖。
+      
+      来源依据：research_findings_config-management-frontend.yaml + T-FE-04 重构产物。
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: ["FormComponents 替换", "DynamicFormEditor 预览接线", "编辑逻辑完整迁移"]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: ["T-FE-01-schema-adapter", "T-FE-02-route-compat", "T-RV-DECISION-00", "T-FE-04-dynamicformeditor-refactor"]
+    conflicts_with: []
+    context_files:
+      - path: "config-management/frontend/src/views/FormDesigner.vue"
+        description: "编排层 & 编辑入口（需接收迁移的编辑方法）"
+      - path: "config-management/frontend/src/components/DynamicFormEditor.vue"
+        description: "重构后的展示层（仅 v-if/v-model）"
+      - path: "config-management/frontend/src/components/FormComponents.vue"
+        description: "旧组件参考"
+    diagnosis:
+      root_cause: "T-FE-04 完成重构后，FormDesigner 需要接收被删除的编辑逻辑并完整实现，以确保设计器功能无退化"
+      fix_recommendations: "（1）接收 T-FE-04 输出的迁移清单；（2）在 FormDesigner 中逐一实现 addTableRow/delTableRow/submitForm/verify；（3）通过适配层与 DynamicFormEditor 交互，同时维护编辑状态"
+      injected_at: "2026-05-11T16:00:00+08:00"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "基于 T-FE-04 重构，FormDesigner 成为编辑逻辑完整承载地"
+        timestamp: "2026-05-11T16:00:00+08:00"
+    estimated_effort: large
+    estimated_files: 3
+    estimated_lines: 300
+    focus_area: "frontend designer orchestration + preview"
+    verification:
+      - "cd config-management/frontend && pnpm lint"
+      - "cd config-management/frontend && pnpm build"
+      - "手工验证：编辑器中新增表格行、删除表格行、修改字段值、提交表单均可正常工作"
+      - "确认 DynamicFormEditor 正确接收 editingData 并实时显示编辑结果"
+      - "通过中间 gate：T-FE-03-after-migration-gate（迁移后编辑链路可用且展示同步正确）"
+    acceptance_criteria:
+      - "FormDesigner 完整实现了 T-FE-04 删除的编辑方法（addTableRow/delTableRow/submitForm/verify），功能无退化"
+      - "FormDesigner 通过适配层将标准化 schema 传给 DynamicFormEditor 以完成字段展示预览"
+      - "FormDesigner 维护编辑状态与交互流程（字段值变更、表格行增删、保存、发布等）"
+      - "DynamicFormEditor 仅包含显示逻辑（v-if/v-model），通过 props:editingData 与 props:readonly 与 FormDesigner 交互"
+      - "旧表单可加载、编辑并保存/发布（无功能回退）"
+      - "T-FE-03-after-migration-gate 通过"
+    failure_modes:
+      - scenario: "接收的编辑方法未完整实现，导致表格行增删等操作失效"
+        likelihood: high
+        impact: high
+        mitigation: "从 T-FE-04 明确获取「迁移清单」，逐一在 FormDesigner 实现；code review 时校验每个方法的功能完整性"
+      - scenario: "接线后 editingData 与 schema 不同步，导致显示与编辑值错位"
+        likelihood: medium
+        impact: high
+        mitigation: "结合 T-FE-01 适配层的映射规则，确保 editingData 结构与 schema 一致"
+      - scenario: "误删或改动了 DynamicFormEditor 应保留的显示逻辑"
+        likelihood: low
+        impact: high
+        mitigation: "依赖 T-FE-04 的明确分割（删除清单 vs 保留清单），code review 时拒绝无关改动"
+    tech_stack: ["Vue3", "TypeScript", "Element Plus"]
+    test_coverage: "设计器链路手工回归 + 编辑逻辑端到端测试（由 T-QA-01 补充）"
+
+  - id: "T-BE-02-handler-normalization"
+    title: "在 Go handler/service 边界落地 schema 归一化（不改 repository）"
+    description: |
+      在 D6 表单 API 边界执行 schema 兼容归一化：
+      1) create/update 接口支持 schema 与 formSchema 入参；
+      2) get/list 返回最小兼容形态（包含前端可消费字段）；
+      3) repository 持久化逻辑保持 map + form_schema 字段不变。
+      来源依据：research_findings_runtime-execution_config-management-backend.yaml。
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: ["Go 边界兼容", "最小兼容"]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: ["T-BE-00-d6-formservice-injection", "T-BE-01-type-contract-compat"]
+    conflicts_with: []
+    context_files:
+      - path: "config-management/backend/internal/handler/server_d6_form.go"
+        description: "表单 HTTP 入口"
+      - path: "runtime-execution/internal/engine/form_service.go"
+        description: "表单业务层"
+      - path: "runtime-execution/pkg/storage/sqlserver/form_repository.go"
+        description: "持久化边界（只读约束，不改逻辑）"
+    diagnosis:
+      root_cause: "当前接口层未统一 schema 别名与结构归一化"
+      fix_recommendations: "在 handler/service 执行统一归一化，不触达仓储层"
+      injected_at: "2026-05-11T00:00:00+08:00"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "落实用户约束：Go 可补契约字段但不改持久化逻辑"
+        timestamp: "2026-05-11T00:00:00+08:00"
+    estimated_effort: medium
+    estimated_files: 3
+    estimated_lines: 220
+    focus_area: "config-management backend + runtime-execution service"
+    verification:
+      - "go test ./config-management/backend/internal/handler -run Form -count=1"
+      - "go test ./runtime-execution/internal/engine -run Form -count=1"
+    acceptance_criteria:
+      - "create/update 接口接受 schema:string|object 与 formSchema:string|object，且行为一致"
+      - "schema 与 formSchema 冲突时固定采用 schema > formSchema；仅当 schema 缺失时回退 formSchema，并可被测试断言"
+      - "get/list 返回结果可被前端适配层稳定消费"
+      - "form_repository.go 与 SQL schema 无行为改动"
+    failure_modes:
+      - scenario: "边界归一化遗漏 list 分支造成前端列表编辑异常"
+        likelihood: medium
+        impact: medium
+        mitigation: "覆盖 get/list/create/update 全链路用例"
+      - scenario: "误改 repository 导致历史数据不可读"
+        likelihood: low
+        impact: high
+        mitigation: "将 repository 列为只读约束并做 diff 审核"
+    tech_stack: ["Go", "Gin", "SQL Server"]
+    test_coverage: "新增 handler/service 兼容测试"
+
+  - id: "T-RV-00-pre-qa-boundary-gate"
+    title: "执行 pre-QA 边界审查 gate（验证逻辑分离）"
+    description: |
+      在进入正式 QA 前执行边界审查 gate，验证 DynamicFormEditor 已完全分离为纯展示层：
+      
+      1) 【新审查标准】验证 DynamicFormEditor 纯展示层实现：
+         - 确认 DynamicFormEditor 不包含 addTableRow/delTableRow/submitForm/verify 等编辑方法
+         - 确认 DynamicFormEditor 仅包含 v-if/v-model 展示分支，无编辑事件处理（@change/@blur/@input）
+         - 确认 onMounted/loadAllOptions/getRules 等显示相关方法已保留
+         - 确认编辑逻辑已完整迁移至 FormDesigner
+      
+      2) 检查 schema/formSchema 冲突优先级是否在前后端均已固化（schema > formSchema；仅 schema 缺失时回退 formSchema）
+      
+      3) 检查 repository 与 SQL schema 是否零改动；
+      
+      4) 固定输出 docs/plan/20260511-replace-formcomponents-with-dynamicformeditor/logs/gate-report.yaml（字段：逻辑分离检查、冲突规则一致性、repository 零改动检查、结论、阻断项）。
+      
+      gate 未通过不得进入 T-QA-01。
+    wave: 3
+    agent: gem-reviewer
+    prototype: false
+    covers: ["pre-QA gate", "逻辑分离验证", "边界合规"]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: ["T-RV-DECISION-00", "T-FE-03-designer-integration", "T-FE-04-dynamicformeditor-refactor", "T-BE-02-handler-normalization"]
+    conflicts_with: []
+    context_files:
+      - path: "config-management/frontend/src/components/DynamicFormEditor.vue"
+        description: "验证纯展示层实现"
+      - path: "config-management/frontend/src/views/FormDesigner.vue"
+        description: "验证编辑逻辑完整迁移"
+      - path: "runtime-execution/pkg/storage/sqlserver/form_repository.go"
+        description: "持久化逻辑边界"
+      - path: "docs/storage/schema_d6.sql"
+        description: "SQL 字段边界"
+    diagnosis:
+      root_cause: "约束变更后，gate 审查标准需要更新以验证逻辑分离而非仅样式改动"
+      fix_recommendations: "重新定义审查标准，强调验证 DynamicFormEditor 纯展示、编辑逻辑完整迁移、repository 零改动"
+      injected_at: "2026-05-11T16:00:00+08:00"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "约束变更，gate 标准同步升级"
+        timestamp: "2026-05-11T16:00:00+08:00"
+    estimated_effort: medium
+    estimated_files: 3
+    estimated_lines: 150
+    focus_area: "scope compliance pre-gate + logic separation verification"
+    verification:
+      - "执行 ESLint 自定义只读规则（no-dfe-edit-path）通过"
+      - "执行 Node AST 校验脚本（verify-dfe-readonly-contract）通过"
+      - "对比 DynamicFormEditor 与 FormDesigner 的迁移映射报告，确认 addTableRow/delTableRow/submitForm/verify 完整迁移"
+      - "git diff -- runtime-execution/pkg/storage/sqlserver/form_repository.go docs/storage/schema_d6.sql 应返回空（确认 repository 零改动）"
+      - "抽查前后端冲突样例断言结果一致（固定规则：schema > formSchema；仅 schema 缺失时回退 formSchema）"
+      - "产出 docs/plan/20260511-replace-formcomponents-with-dynamicformeditor/logs/gate-report.yaml"
+    acceptance_criteria:
+      - "DynamicFormEditor 删除了所有编辑方法（addTableRow/delTableRow/submitForm/verify）"
+      - "DynamicFormEditor 仅包含显示逻辑（v-if/v-model 分支 + onMounted/loadAllOptions/getRules）且所有输入控件 disabled/readonly"
+      - "编辑逻辑已完整迁移至 FormDesigner（确认 FormDesigner 中包含所有迁移的方法）"
+      - "repository 与 SQL schema 无改动"
+      - "schema/formSchema 冲突优先级已在 FE/BE/QA 三侧按 schema > formSchema（仅 schema 缺失回退 formSchema）对齐"
+      - "docs/plan/20260511-replace-formcomponents-with-dynamicformeditor/logs/gate-report.yaml 按固定模板产出且字段完整"
+      - "gate 结论为 pass 后方可进入 T-QA-01"
+    failure_modes:
+      - scenario: "仅看文件变更范围，未逐一校验编辑方法的迁移情况"
+        likelihood: medium
+        impact: high
+        mitigation: "补充「编辑方法迁移清单检查」，逐一验证 addTableRow/delTableRow/submitForm/verify 的新位置"
+      - scenario: "gate 被跳过导致风险后移"
+        likelihood: low
+        impact: high
+        mitigation: "将 T-QA-01 显式依赖本任务，流水线强制执行"
+      - scenario: "遗漏关键显示逻辑的删除（如误删了 getRules 方法）"
+        likelihood: medium
+        impact: high
+        mitigation: "补充「显示逻辑保留清单检查」，确认 onMounted/loadAllOptions/getRules 仍存在"
+    requires_review: true
+    review_depth: full
+    review_security_sensitive: false
+
+  - id: "T-QA-01-compat-regression"
+    title: "执行前后端最小兼容回归与命令化验证（含编辑交互验证）"
+    description: |
+      建立并执行最小兼容验证矩阵，重点验证 FormDesigner 的编辑交互：
+      1) 旧 schema（name/type）加载-编辑（含表格行增删）-保存-发布；
+      2) 新 schema（key/type/commonApi）加载-编辑（含表格行增删）-保存；
+      3) schema/formSchema 各自 string|object 双输入；
+      4) 路由兼容访问（formId/id）；
+      5) 【新增】编辑交互验证（表格行增删、字段验证、表单提交）均由 FormDesigner 承载，DynamicFormEditor 正确显示编辑结果。
+    wave: 4
+    agent: gem-browser-tester
+    prototype: false
+    covers: ["兼容回归", "链路验收", "编辑交互验证"]
+    priority: high
+    status: pending
+    flags:
+      flaky: true
+      retries_used: 0
+    dependencies: ["T-FE-03-designer-integration", "T-FE-04-dynamicformeditor-refactor", "T-BE-00-d6-formservice-injection", "T-BE-02-handler-normalization", "T-RV-00-pre-qa-boundary-gate"]
+    conflicts_with: []
+    context_files:
+      - path: "docs/plan/20260511-replace-formcomponents-with-dynamicformeditor/research_findings_config-management-frontend.yaml"
+        description: "前端风险点"
+      - path: "docs/plan/20260511-replace-formcomponents-with-dynamicformeditor/research_findings_runtime-execution_config-management-backend.yaml"
+        description: "后端风险点"
+      - path: "config-management/frontend/src/views/FormDesigner.vue"
+        description: "验证入口（含编辑交互）"
+    diagnosis:
+      root_cause: "约束变更后，编辑交互由 FormDesigner 完整承载，需要补充新的验证场景以确保编辑能力无退化"
+      fix_recommendations: "在原有兼容回归基础上，新增「编辑交互验证」场景（表格行增删、字段修改、提交验证等）"
+      injected_at: "2026-05-11T16:00:00+08:00"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "约束变更引入新的验证需求"
+        timestamp: "2026-05-11T16:00:00+08:00"
+    estimated_effort: large
+    estimated_files: 2
+    estimated_lines: 180
+    focus_area: "E2E compatibility + editing interaction"
+    verification:
+      - "cd config-management/frontend && pnpm lint && pnpm build"
+      - "go test ./config-management/backend/internal/handler ./runtime-execution/internal/engine -count=1"
+      - "cd config-management/frontend && pnpm dev"
+    acceptance_criteria:
+      - "验证矩阵全部通过且无阻断级回归"
+      - "前后端日志无新增高频错误"
+      - "兼容场景（旧字段/旧路由）可正常完成保存"
+      - "schema 与 formSchema 并存冲突样例按 schema > formSchema（仅 schema 缺失回退 formSchema）断言通过"
+      - "【新增】编辑交互正确工作：表格行增删、字段修改、表单提交等均由 FormDesigner 承载并可正常执行"
+      - "【新增】DynamicFormEditor 正确同步显示编辑结果（editingData 与 schema 一致）"
+      - "minimum_dod_checklist 全项满足"
+    failure_modes:
+      - scenario: "仅验证 happy path，遗漏历史脏数据与编辑交互冲突"
+        likelihood: medium
+        impact: high
+        mitigation: "引入旧 schema 样例、空值/缺字段样例、编辑后回滚样例"
+      - scenario: "E2E 偶发失败导致误判"
+        likelihood: medium
+        impact: medium
+        mitigation: "设置 flaky 标记并允许最多 2 次重试"
+      - scenario: "编辑交互验证遗漏关键场景（如表格行删除后的数据一致性）"
+        likelihood: medium
+        impact: high
+        mitigation: "补充「编辑交互场景清单」，覆盖表格行增删、字段修改、验证、提交等全链路"
+    validation_matrix:
+      - scenario: "schema/formSchema 冲突优先级回归"
+        steps: ["构造 schema 与 formSchema 同时存在且冲突样例", "执行加载与保存", "对比 FE/BE 归一化结果"]
+        expected_result: "固定规则 schema > formSchema（仅 schema 缺失回退 formSchema）在 FE/BE/QA 一致且断言全部通过"
+      - scenario: "旧字段 schema 编辑回归"
+        steps: ["打开设计器", "加载 name/type 历史 schema", "编辑字段值、增删表格行", "保存"]
+        expected_result: "保存成功，后端可再次读取，编辑操作全部由 FormDesigner 完成"
+      - scenario: "新字段 schema 编辑回归"
+        steps: ["加载 key/type/commonApi schema", "编辑字段值、增删表格行", "发布"]
+        expected_result: "发布成功，UI 回显一致，编辑操作全部由 FormDesigner 完成"
+      - scenario: "【新增】表格行增删交互验证"
+        steps: ["进入编辑器", "在 FormDesigner 中新增表格行", "修改行内字段值", "删除表格行", "保存"]
+        expected_result: "新增/删除操作均由 FormDesigner 承载，DynamicFormEditor 正确显示最新状态，保存后数据一致"
+      - scenario: "【新增】编辑值与显示同步验证"
+        steps: ["编辑 FormDesigner 中的字段值", "观察 DynamicFormEditor 中的显示更新"]
+        expected_result: "DynamicFormEditor 通过 editingData 实时显示编辑结果，无延迟或错位"
+    flows:
+      - flow_id: "designer-compat-flow"
+        description: "设计器全链路兼容与编辑交互流"
+        setup: ["准备旧版与新版表单样例"]
+        steps: ["进入列表页", "跳转设计器", "执行编辑操作（表格行增删、字段修改）", "保存", "发布", "刷新重开"]
+        expected_state: {"save": "success", "publish": "success", "reload": "consistent", "editing": "all_in_formdesigner"}
+        teardown: ["清理临时样例数据"]
+    fixtures: {"schemas": ["legacy_name_type.json", "dynamic_key_type.json"]}
+    test_data: ["schema:string", "schema:object", "formSchema:string", "formSchema:object", "schema+formSchema:conflict", "table_row_add", "table_row_delete", "field_modify"]
+    cleanup: true
+    visual_regression: {"enabled": false, "reason": "本次要求功能兼容与逻辑分离验证"}
+
+  - id: "T-RV-01-contract-review"
+    title: "执行兼容契约与逻辑分离审查"
+    description: |
+      对实现结果进行专项审查，重点验证逻辑分离的完整性：
+      1) 【新审查重点】DynamicFormEditor 是否完全分离为纯展示层（无编辑逻辑）；
+      2) FormDesigner 是否完整承载了迁移的编辑逻辑；
+      3) repository 与 SQL schema 是否零改动；
+      4) 前后端兼容策略是否与计划一致。
+    wave: 4
+    agent: gem-reviewer
+    prototype: false
+    covers: ["逻辑分离验证", "约束合规", "变更边界"]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: ["T-QA-01-compat-regression"]
+    conflicts_with: []
+    context_files:
+      - path: "config-management/frontend/src/components/DynamicFormEditor.vue"
+        description: "验证纯展示实现"
+      - path: "config-management/frontend/src/views/FormDesigner.vue"
+        description: "验证编辑逻辑完整迁移"
+      - path: "runtime-execution/pkg/storage/sqlserver/form_repository.go"
+        description: "持久化逻辑边界"
+      - path: "docs/storage/schema_d6.sql"
+        description: "SQL 字段边界"
+    diagnosis:
+      root_cause: "约束变更后，审查重点从「样式改动」升级为「逻辑分离」，需要明确验证删除与迁移的完整性"
+      fix_recommendations: "补充「逻辑分离验证清单」，逐一确认编辑方法的删除与迁移"
+      injected_at: "2026-05-11T16:00:00+08:00"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "约束变更，审查标准同步升级"
+        timestamp: "2026-05-11T16:00:00+08:00"
+    estimated_effort: medium
+    estimated_files: 3
+    estimated_lines: 120
+    focus_area: "logic separation + scope compliance"
+    verification:
+      - "git diff -- config-management/frontend/src/components/DynamicFormEditor.vue | 确认仅删除编辑逻辑，无新增"
+      - "执行 ESLint 自定义只读规则（no-dfe-edit-path）通过"
+      - "执行 Node AST 校验脚本（verify-dfe-readonly-contract）通过"
+      - "git diff -- config-management/frontend/src/views/FormDesigner.vue | 确认包含迁移的编辑方法"
+      - "git diff -- runtime-execution/pkg/storage/sqlserver/form_repository.go docs/storage/schema_d6.sql 应返回空"
+      - "复核 docs/plan/20260511-replace-formcomponents-with-dynamicformeditor/logs/gate-report.yaml 的「逻辑分离检查」字段为 pass"
+    acceptance_criteria:
+      - "DynamicFormEditor 仅包含展示逻辑，完全删除了编辑交互（addTableRow/delTableRow/submitForm/verify）"
+      - "FormDesigner 完整承载了迁移的编辑逻辑，无功能缺失"
+      - "DynamicFormEditor 与 FormDesigner 的职责边界清晰（展示 vs 编辑）"
+      - "repository 与 SQL schema 无改动"
+      - "审查结论可追溯到具体文件 diff 与代码行"
+    failure_modes:
+      - scenario: "审查只看统计数据未看代码逻辑，遗漏隐性的编辑逻辑留存"
+        likelihood: medium
+        impact: medium
+        mitigation: "结合 diff + 关键函数逐行抽查，确认删除与迁移完整"
+      - scenario: "遗漏间接编辑逻辑（如通过事件委托的编辑处理）"
+        likelihood: low
+        impact: high
+        mitigation: "除了直接方法调用，还要检查 v-on:change/@input/@blur 等事件绑定"
+      - scenario: "FormDesigner 中迁移的编辑方法发生「缩水」或「变体」"
+        likelihood: medium
+        impact: high
+        mitigation: "对比 T-FE-04 的删除清单与 T-FE-03 的迁移结果，确认功能等同"
+    requires_review: true
+    review_depth: full
+    review_security_sensitive: false
+
+  - id: "T-DOC-01-migration-doc"
+    title: "补齐替换方案文档与兼容矩阵（含逻辑分离架构说明）"
+    description: |
+      产出本次替换的开发者文档，重点说明约束变更与逻辑分离架构：
+      1) 文档记录架构转变：FormDesigner（编排 + 编辑）、适配层（转换）、DynamicFormEditor（纯展示）的三层关系，强调约束变更的意义；
+      2) 详细记录逻辑分离：DynamicFormEditor 删除的方法清单与 FormDesigner 的承载位置；
+      3) 记录 schema 归一化规则（旧->新、新->存储）与双向映射逻辑；
+      4) 记录 Go schema/formSchema 兼容策略与优先级；
+      5) 【新增】记录 DynamicFormEditor 与 FormDesigner 的职责边界与通信方式（props:editingData、props:readonly）；
+      6) 记录编辑交互新实现（在 FormDesigner 中的 addTableRow/delTableRow/submitForm/verify）；
+      7) 记录验证命令、已知限制与回滚建议。
+    wave: 5
+    agent: gem-documentation-writer
+    prototype: false
+    covers: ["文档交付", "架构说明", "逻辑分离说明", "可维护性"]
+    priority: medium
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: ["T-RV-01-contract-review"]
+    conflicts_with: []
+    context_files:
+      - path: "docs/plan/20260511-replace-formcomponents-with-dynamicformeditor/plan.yaml"
+        description: "计划基线"
+      - path: "docs/plan/20260511-replace-formcomponents-with-dynamicformeditor/research_findings_config-management-frontend.yaml"
+        description: "前端研究依据"
+      - path: "docs/plan/20260511-replace-formcomponents-with-dynamicformeditor/research_findings_runtime-execution_config-management-backend.yaml"
+        description: "后端研究依据"
+    diagnosis:
+      root_cause: "约束变更与逻辑分离是本次改造的核心，若无文档明确说明职责边界与迁移内容，后续易产生理解偏差、导致功能缺陷或逻辑混淆"
+      fix_recommendations: "沉淀架构设计、逻辑分离清单、迁移方案、映射规则、验证基线、约束变更意义"
+      injected_at: "2026-05-11T16:00:00+08:00"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "约束变更后，文档需要重点强调逻辑分离与职责边界"
+        timestamp: "2026-05-11T16:00:00+08:00"
+    estimated_effort: medium
+    estimated_files: 2
+    estimated_lines: 200
+    focus_area: "documentation"
+    verification:
+      - "文档包含：三层架构说明、约束变更意义、逻辑分离清单、迁移方案、映射规则、职责边界、命令清单、风险与回滚策略"
+      - "文档中的命令在本地可执行"
+      - "文档中引用的文件与方法在代码中可找到"
+    acceptance_criteria:
+      - "开发者可按文档理解三层架构、约束变更背景、逻辑分离方案"
+      - "文档清晰说明 DynamicFormEditor 的删除方法清单与 FormDesigner 的承载位置"
+      - "文档说明 DynamicFormEditor 与 FormDesigner 的通信方式（props:editingData、props:readonly）"
+      - "文档清晰说明编辑交互完全由 FormDesigner 承载（addTableRow/delTableRow/submitForm/verify 的新实现位置）"
+      - "文档覆盖约束变更：允许 DynamicFormEditor 完全重构，不再仅限样式调整"
+      - "文档覆盖用户约束：不改 repository 持久化"
+      - "文档覆盖映射规则、命令清单（构建、测试、启动、验证）、已知限制、回滚建议"
+    failure_modes:
+      - scenario: "文档遗漏逻辑分离清单，导致后续实现时再次混淆职责"
+        likelihood: medium
+        impact: high
+        mitigation: "在文档最开始以清晰的表格列出「删除方法清单」与「迁移目标」"
+      - scenario: "文档遗漏约束变更背景与意义"
+        likelihood: low
+        impact: medium
+        mitigation: "在文档前言中明确说明约束变更的原因与新约束的定义"
+      - scenario: "文档命令与实际工程不匹配"
+        likelihood: low
+        impact: medium
+        mitigation: "在交付前执行一次命令清单校验"
+    task_type: documentation
+    audience: developers
+    coverage_matrix: ["约束变更说明与意义", "三层架构与职责边界", "逻辑分离清单", "迁移方案", "DynamicFormEditor 与 FormDesigner 通信", "schema 映射", "Go 契约兼容", "路由兼容", "验证命令", "已知限制与回滚方案"]

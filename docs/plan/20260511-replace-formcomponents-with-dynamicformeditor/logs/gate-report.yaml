@@ -1,0 +1,273 @@
+task_id: T-RV-00
+wave: 2
+gate_name: "Pre-QA Boundary Gate"
+timestamp: "2026-05-11T14:30:00+08:00"
+review_agent: "gem-reviewer"
+
+executive_summary: |
+  T-RV-00 Pre-QA Boundary Gate 审查失败。发现CRITICAL级别约束违反：
+  DynamicFormEditor.vue 中的6个基线业务方法被完全删除（onMounted, loadAllOptions, getRules, addTableRow, delTableRow, submitForm），
+  违反了plan中"复用现有业务逻辑无删除或重构改动"的核心约束。虽然这些方法已在FormDesigner.vue中重新实现，
+  但DynamicFormEditor.vue 本身不再包含这些基线能力，导致组件无法独立使用，与"展示层"定位不符。
+  不得进入T-QA-01，需返回修复。
+
+scope_verification:
+  status: fail
+  details:
+    - item: "DynamicFormEditor.vue改动范围"
+      status: fail
+      severity: critical
+      evidence: |
+        删除了6个业务逻辑方法：
+        - onMounted() 初始化表单数据和加载选项（git diff line ~132）
+        - loadAllOptions() 异步加载下拉选项（git diff line ~143）
+        - getRules() 生成表单验证规则（git diff line ~156）
+        - addTableRow() 添加表格行（git diff line ~171）
+        - delTableRow() 删除表格行（git diff line ~176）
+        - submitForm() 提交表单（git diff line ~181）
+        
+        删除了UI交互：
+        - 表格内部编辑控件（el-input/el-select 内置于表格）
+        - 表格行操作按钮（添加行/删除行）
+        - 表单提交按钮
+        
+        保留了：
+        - :disabled="readonly" 绑定（6处）
+        - :model-value="..." 只读数据绑定
+      line_ref: "config-management/frontend/src/components/DynamicFormEditor.vue"
+      recommendation: "DynamicFormEditor.vue 必须保留所有基线业务方法，仅允许样式调整。如需调整编辑体验，应在FormDesigner.vue中实现，保留DynamicFormEditor的独立可复用性"
+    
+    - item: "FormDesigner.vue改动范围"
+      status: pass
+      severity: info
+      evidence: |
+        正确新增了所有业务逻辑方法：
+        - loadAllOptions() 异步加载选项（✅）
+        - getRules() 生成验证规则（✅）
+        - addTableRow() 添加表格行（✅）
+        - delTableRow() 删除表格行（✅）
+        - saveForm() 返回boolean的保存方法（✅）
+        
+        正确集中管理编辑状态：
+        - editingData reactive（✅）
+        - dynamicSchema computed（✅）
+        - publish() 包含saveForm短路判断（✅）
+      line_ref: "config-management/frontend/src/views/FormDesigner.vue"
+    
+    - item: "无越界改动确认"
+      status: pass
+      severity: info
+      evidence: |
+        检查项：
+        - schema-adapter.ts：无改动（Wave 1产物）✅
+        - form_repository.go：无改动（零改动约束）✅
+        - SQL schema：无改动 ✅
+        - go.mod：无改动 ✅
+        - vite.config.ts：无改动 ✅
+
+constraint_compliance:
+  status: fail
+  details:
+    - constraint: "DynamicFormEditor纯展示层约束（T-RV-DECISION-00冻结）"
+      check_result: fail
+      severity: critical
+      items:
+        - ":disabled绑定覆盖所有输入控件": true
+        - "无编辑方法残留": false  # ❌ 违反 - 所有编辑方法都被删除了
+        - "无事件处理": true
+        - "formData为computed只读": true
+      findings:
+        - finding: "onMounted() 被删除"
+          violation: "plan要求保留基线能力，但onMounted已完全删除，导致组件无法在独立环境初始化"
+          evidence: "git diff DynamicFormEditor.vue 第132行处显示-onMounted完全删除"
+        - finding: "loadAllOptions() 被删除"
+          violation: "plan要求保留现有业务逻辑，但该方法已删除，导致组件无法独立加载下拉选项"
+          evidence: "git diff DynamicFormEditor.vue 第143行处显示-loadAllOptions完全删除"
+        - finding: "getRules() 被删除"
+          violation: "验证规则生成方法被删除，与'保留现有业务逻辑'违反"
+          evidence: "git diff DynamicFormEditor.vue 第156行处显示-getRules完全删除"
+        - finding: "addTableRow/delTableRow/submitForm 被删除"
+          violation: "表格编辑、表单提交等基线能力全部删除"
+          evidence: "git diff DynamicFormEditor.vue 第171/176/181行处显示完全删除"
+      recommendation: |
+        **必须回滚 DynamicFormEditor.vue 的删除操作**：
+        1. 恢复 onMounted/loadAllOptions/getRules/addTableRow/delTableRow/submitForm 方法
+        2. 恢复表格行编辑控件和操作按钮
+        3. 恢复表单提交按钮
+        4. DynamicFormEditor 应为一个完整的、可独立使用的动态表单编辑器
+        5. FormDesigner 作为编排层使用 DynamicFormEditor，而非替代它
+        
+        职责划分应为：
+        - DynamicFormEditor：包含所有字段类型渲染、验证、值处理的完整逻辑（展示+编辑）
+        - FormDesigner：在高层编排和管理多个DynamicFormEditor实例，负责字段类型管理、设计时UI等
+
+    - constraint: "FormDesigner编辑编排层约束"
+      check_result: pass
+      severity: info
+      items:
+        - "editingData集中管理": true
+        - "saveForm返回boolean": true
+        - "publish短路处理": true
+      findings: []
+    
+    - constraint: "schema转换规则约束（schema > formSchema 优先级）"
+      check_result: pass
+      severity: info
+      items:
+        - "FE使用schema-adapter": true
+        - "BE使用NormalizeSchema": true
+        - "优先级规则一致": true
+
+consistency_verification:
+  status: fail
+  details:
+    - item: "代码风格"
+      status: pass
+      severity: info
+      remarks: "Vue 3 setup、TypeScript、驼峰命名一致"
+    - item: "错误处理"
+      status: pass
+      severity: info
+      remarks: "FormDesigner.vue中所有API调用有try-catch，Promise都await"
+    - item: "类型完整性"
+      status: pass
+      severity: info
+      remarks: "vue-tsc无errors，Props类型完整"
+    - item: "现有模式一致性"
+      status: pass
+      severity: info
+      remarks: "API调用、事件处理遵循现有模式"
+    - item: "架构一致性（职责边界）"
+      status: fail
+      severity: critical
+      remarks: |
+        组件职责划分有误：
+        - DynamicFormEditor 被改为纯展示层（无编辑能力）
+        - FormDesigner 完全接管了编辑逻辑（包括字段值管理、验证、表格编辑）
+        
+        这与plan中"DynamicFormEditor复用现有业务逻辑"的要求不符。
+        DynamicFormEditor应是一个完整的动态表单组件，不应被剥离为纯展示层。
+
+build_verification:
+  npm_lint: pass
+  npm_build: pass
+  typescript: pass
+  remarks: "前端构建检查通过，无编译错误或lint警告"
+
+git_analysis:
+  files_changed: 15
+  files_modified:
+    - path: "config-management/frontend/src/components/DynamicFormEditor.vue"
+      insertions: 143
+      deletions: 127
+      net_change: "+16"
+      status: fail
+      issue: |
+        净增为+16行（143-127=16），但实际删除了6个业务方法。
+        按删除>>添加的预期（仅样式修改），不符合预期（删除行数应远大于添加行数）。
+        实际删除是关键业务方法，非样式代码。
+    - path: "config-management/frontend/src/views/FormDesigner.vue"
+      insertions: 548
+      deletions: 127
+      net_change: "+421"
+      status: pass
+      issue: "None"
+    - path: "runtime-execution/internal/common/types/form_types.go"
+      insertions: 105
+      deletions: 105
+      status: pass
+      issue: "None"
+    - path: "runtime-execution/pkg/types/form_types.go"
+      insertions: 105
+      deletions: 105
+      status: pass
+      issue: "None"
+
+blocking_issues:
+  - id: "BLOCK-001"
+    severity: critical
+    title: "DynamicFormEditor 业务逻辑被删除"
+    description: |
+      DynamicFormEditor.vue 中的6个关键业务方法（onMounted, loadAllOptions, getRules, addTableRow, 
+      delTableRow, submitForm）已被完全删除。这违反了plan中"DynamicFormEditor 复用现有业务逻辑无删除或重构改动"
+      的核心约束。
+    location: "config-management/frontend/src/components/DynamicFormEditor.vue"
+    evidence: "git diff HEAD -- config-management/frontend/src/components/DynamicFormEditor.vue"
+    action_required: "必须回滚删除操作，恢复所有业务方法到DynamicFormEditor.vue中"
+  
+  - id: "BLOCK-002"
+    severity: critical
+    title: "组件职责边界混淆"
+    description: |
+      DynamicFormEditor 已被改造为纯展示层（仅readonly），FormDesigner 接管了所有编辑逻辑。
+      这与plan中"DynamicFormEditor 作为可复用的动态表单编辑器"的设计相悖。
+      DynamicFormEditor 应保留完整的编辑能力，FormDesigner 应作为高层编排，而非替代。
+    location: "config-management/frontend/src/components/DynamicFormEditor.vue"
+    evidence: "DynamicFormEditor中已移除v-model、事件处理、所有编辑方法"
+    action_required: "重新评估架构：DynamicFormEditor应为完整编辑组件，FormDesigner为高层编排"
+
+findings:
+  - id: "FDG-001"
+    category: "Architecture Violation"
+    severity: high
+    description: "DynamicFormEditor 变为只读展示组件，与预期的可复用编辑器职责不符"
+    location: "config-management/frontend/src/components/DynamicFormEditor.vue"
+    recommendation: "恢复DynamicFormEditor为完整的动态表单编辑器，保留所有基线业务方法"
+  
+  - id: "FDG-002"
+    category: "Constraint Violation"
+    severity: high
+    description: "违反了plan中'保留现有业务逻辑无删除改动'的约束"
+    location: "git diff DynamicFormEditor.vue"
+    recommendation: "检查plan的约束理解是否有偏差，或重新规划组件职责"
+
+recommendations:
+  - priority: critical
+    action: "立即回滚DynamicFormEditor.vue中的删除操作"
+    detail: "恢复onMounted、loadAllOptions、getRules、addTableRow、delTableRow、submitForm方法"
+  
+  - priority: critical
+    action: "重新评估DynamicFormEditor的职责"
+    detail: |
+      DynamicFormEditor应为：
+      - 完整的、可独立使用的动态表单编辑器
+      - 支持字段值双向绑定（v-model）
+      - 包含所有字段类型的渲染、验证、编辑逻辑
+      
+      FormDesigner应为：
+      - 高层编排层，负责字段类型管理和设计时UI
+      - 管理DynamicFormEditor实例的编辑数据和状态
+      - 不应替代DynamicFormEditor的编辑能力
+  
+  - priority: high
+    action: "明确'样式调整'的范围"
+    detail: |
+      "仅允许样式调整"应严格限制为CSS/布局，不包括：
+      - 删除业务逻辑方法
+      - 删除编辑交互控件
+      - 改变数据绑定模式（v-model → :model-value + :disabled）
+
+overall_status: fail
+decision: "Return to dev for fixes - 不得进入T-QA-01"
+confidence: 0.98
+
+failure_reason: |
+  约束验证失败。DynamicFormEditor.vue 中删除了6个关键业务方法（onMounted, loadAllOptions, getRules, 
+  addTableRow, delTableRow, submitForm），直接违反了plan冻结约束：
+  
+  冻结约束原文：
+  "DynamicFormEditor 复用现有业务逻辑无删除或重构改动（保留 onMounted/loadAllOptions/getRules/addTableRow/delTableRow/submitForm 等基线能力）"
+  
+  实际改动：所有上述方法已被完全删除。
+  
+  这是CRITICAL级别违反，必须回滚后重新提交。
+
+gate_approved_by: "gem-reviewer"
+review_depth: "full"
+review_completed_at: "2026-05-11T14:30:00+08:00"
+next_steps: |
+  1. 返回开发团队，通知约束违反
+  2. 恢复DynamicFormEditor.vue到原始状态（保留所有业务逻辑方法）
+  3. 重新规划FormDesigner与DynamicFormEditor的职责边界
+  4. 重新提交T-RV-00 gate审查
+  5. 获得gate pass后，方可进入T-QA-01

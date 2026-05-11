@@ -1,0 +1,105 @@
+task_id: "doc-20260511-replace-formcomponents"
+plan_id: "20260511-replace-formcomponents-with-dynamicformeditor"
+related_plan_id: "20260428-d6-ga-v1"
+created_at: "2026-05-11"
+status: completed
+audience: developers
+objective: >
+  记录将 FormComponents 相关能力迁移为 DynamicFormEditor 实现的任务澄清与架构决策，
+  作为 d6-w6-t4（前端页面-表单设计器）的补充依据。
+
+scope:
+  in_scope:
+    - 计划文档与研究文档更新
+    - task_clarifications 与 architectural_decisions 的结构化沉淀
+    - 风险与决策依据文件标注
+  out_of_scope:
+    - 业务代码变更
+    - 接口协议调整
+    - 数据库结构变更
+
+task_clarifications:
+  - id: "clar-01"
+    question: "本次任务是否允许修改前后端业务代码？"
+    answer: "不允许。仅更新文档，不改动任何业务实现。"
+    impact: "所有输出均限定在 docs/plan/d6-plan 下，避免引入运行时行为变化。"
+
+  - id: "clar-02"
+    question: "记录位置应放在主计划还是相邻文档？"
+    answer: "采用主计划引用 + 相邻研究文档承载详情。"
+    impact: "主计划保持简洁，详细决策可追溯且便于后续增量更新。"
+
+  - id: "clar-03"
+    question: "组件替换目标如何定义？"
+    answer: >
+      在 d6-w6-t4 语义下，将原 FormComponents 能力基线与 DynamicFormEditor 的当前能力进行映射，
+      本文档只记录替换决策和风险，不直接声明代码已完成替换。
+    impact: "避免把文档记录误当作已上线实现，降低认知偏差风险。"
+
+architectural_decisions:
+  - id: "ADR-DFE-001"
+    title: "采用独立研究文档承载替换决策"
+    status: accepted
+    decision: >
+      在 docs/plan/d6-plan 新增 research_findings_dynamicformeditor_replacement.yaml，
+      并在 d6 主计划 d6-w6-t4 下增加引用字段。
+    rationale:
+      - d6 主计划为长期演进文档，直接内嵌大量澄清会降低可读性
+      - 研究文档可持续追加风险、证据和差异分析
+      - 与已有 research_findings_* 命名与组织方式一致
+    consequences:
+      - 主计划阅读路径增加一次跳转
+      - 决策溯源清晰度提升
+
+  - id: "ADR-DFE-002"
+    title: "以能力映射替代文件名等价"
+    status: accepted
+    decision: >
+      文档层面将“FormComponents -> DynamicFormEditor”定义为能力替换关系，
+      不以组件文件名一致性作为完成标准。
+    rationale:
+      - 当前仓库同时存在两个组件文件，阶段性并存是可预期状态
+      - D6 任务目标本质是“动态表单渲染与编辑能力”而非特定文件名
+    consequences:
+      - 后续验收需补充能力覆盖清单
+      - 需要在实施阶段避免双组件职责漂移
+
+  - id: "ADR-DFE-003"
+    title: "先文档归档，再实施落地"
+    status: accepted
+    decision: "本次仅完成决策归档，不在同任务中推进代码替换。"
+    rationale:
+      - 满足当前任务约束（仅文档更新）
+      - 降低跨任务变更耦合，便于独立评审
+    consequences:
+      - 需后续实施任务闭环功能替换与回归验证
+
+key_risks:
+  - id: "RISK-DFE-01"
+    level: medium
+    description: "文档声明替换意图，但代码仍并存，可能被误读为已完成切换。"
+    mitigation: "在任务描述和决策条目中明确“仅文档更新，未实施代码切换”。"
+
+  - id: "RISK-DFE-02"
+    level: medium
+    description: "d6 主计划仍使用 web/src 路径表述，实际前端目录为 config-management/frontend/src。"
+    mitigation: "通过本文件记录路径差异，后续在实施任务统一修订路径基线。"
+
+  - id: "RISK-DFE-03"
+    level: low
+    description: "FormComponents 与 DynamicFormEditor 并存期间可能出现职责重叠。"
+    mitigation: "后续实施任务增加组件职责边界说明与验收用例。"
+
+decision_basis_files:
+  - path: "docs/plan/d6-plan/plan.yaml"
+    reason: "d6-w6-t4 的原始任务定义与交付范围来源。"
+  - path: "docs/plan/d6-plan/research_findings_doc_coverage_analysis.yaml"
+    reason: "表单组件覆盖缺口与补齐建议来源。"
+  - path: "config-management/frontend/src/components/FormComponents.vue"
+    reason: "当前既有组件能力与语义基线来源。"
+  - path: "config-management/frontend/src/components/DynamicFormEditor.vue"
+    reason: "替换目标组件现状与能力边界来源。"
+
+change_log:
+  - date: "2026-05-11"
+    change: "首次创建，补充 task_clarifications、architectural_decisions、风险与依据文件。"

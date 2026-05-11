@@ -4,8 +4,8 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	types "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 	api "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api"
+	types "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
 // SetD6FormService 注入表单服务，并注册 D6 表单路由
@@ -44,6 +44,10 @@ func (s *Server) createForm(c *gin.Context) {
 	}
 	var req types.FormDefinition
 	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		return
+	}
+	if err := req.NormalizeSchema(req.Schema, req.FormSchema); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
 		return
 	}
@@ -110,6 +114,10 @@ func (s *Server) updateForm(c *gin.Context) {
 	}
 	var req types.FormDefinition
 	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		return
+	}
+	if err := req.NormalizeSchema(req.Schema, req.FormSchema); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
 		return
 	}
@@ -228,5 +236,3 @@ func (s *Server) getFormInstanceByWorkflow(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"code": 200, "data": inst})
 }
-
-

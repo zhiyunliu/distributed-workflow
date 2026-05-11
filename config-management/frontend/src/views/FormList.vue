@@ -110,7 +110,7 @@ async function viewVersions(row: FormDefinition) {
 }
 
 function goDesigner(row: FormDefinition) {
-  router.push(`/form/designer/${row.formId}`)
+  router.push({ name: 'FormDesignerEdit', params: { formId: row.formId } })
 }
 
 function statusTag(status: number): TagType {

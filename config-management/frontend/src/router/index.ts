@@ -91,6 +91,14 @@ const router = createRouter({
           component: () => import('@/views/FormDesigner.vue'),
           meta: { title: '表单设计器', icon: 'Edit' },
         },
+        {
+          path: 'form/designer',
+          redirect: '/forms/designer',
+        },
+        {
+          path: 'form/designer/:id',
+          redirect: (to) => `/forms/designer/${String(to.params.id ?? '')}`,
+        },
         // ── 数据分析 ──────────────────────────────────────────────────
         {
           path: 'analytics',

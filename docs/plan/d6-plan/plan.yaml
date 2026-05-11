@@ -692,6 +692,8 @@ tasks:
          使用 <el-form> + 动态组件渲染方式实现。
       3. web/src/components/FormComponents.vue：表单组件渲染器
          根据formSchema JSON动态渲染表单组件（用于审批表单的填写）。
+    task_clarifications_ref: "docs/plan/d6-plan/research_findings_dynamicformeditor_replacement.yaml"
+    architectural_decisions_ref: "docs/plan/d6-plan/research_findings_dynamicformeditor_replacement.yaml"
 
   - task_id: "d6-w6-t5"
     wave: 6

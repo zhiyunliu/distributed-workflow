@@ -1,0 +1,252 @@
+plan_id: "20260511-replace-formcomponents-with-dynamicformeditor"
+objective: "定位 Go 代码中为 DynamicFormEditor 缺失的 schema 属性补齐点，并给出兼容最小改动方案"
+focus_area: "runtime-execution + config-management backend"
+created_at: "2026-05-11"
+created_by: "GPT-5.3-Codex"
+status: completed
+tldr: |
+  - Go 侧表单定义统一使用 formSchema（map[string]interface{}），未暴露 schema 同义字段。
+  - DynamicFormEditor 组件依赖 schema 顶层对象及其 fields/commonApi 等子属性。
+  - SQL Server 持久化字段为 workflow_form_definition.form_schema（NVARCHAR），通过 marshal/unmarshal 在 map 与 JSON 字符串之间转换。
+  - config-management backend 的 D6 表单 handler 使用 types.FormDefinition 直接绑定请求体。
+  - config-management/backend/cmd/api/main.go 当前未注入 SetD6FormService，D6 表单路由初始化链未在该入口体现。
+research_metadata:
+  methodology: "semantic_search + grep_search + read_file + relationship discovery"
+  scope: "runtime-execution, config-management/backend, config-management/frontend(DynamicFormEditor 契约来源)"
+  confidence: high
+  coverage: 93
+  decision_blockers: 1
+  research_blockers: 1
+files_analyzed:
+  - file: "form_types.go"
+    path: "runtime-execution/pkg/types/form_types.go"
+    purpose: "D6 表单核心领域模型定义"
+    key_elements:
+      - element: "FormDefinition"
+        type: class
+        location: "runtime-execution/pkg/types/form_types.go:23"
+        description: "表单定义，包含 FormSchema map 字段"
+        language: "go"
+      - element: "FormVersionHistory.FormSchema"
+        type: variable
+        location: "runtime-execution/pkg/types/form_types.go:55"
+        description: "版本历史 schema 字段"
+        language: "go"
+    lines: 69
+  - file: "form_types.go"
+    path: "runtime-execution/internal/common/types/form_types.go"
+    purpose: "内部 common 类型镜像定义"
+    key_elements:
+      - element: "FormDefinition"
+        type: class
+        location: "runtime-execution/internal/common/types/form_types.go:23"
+        description: "与 pkg/types 同名结构，包含 formSchema JSON 标签"
+        language: "go"
+    lines: 69
+  - file: "server_d6_form.go"
+    path: "config-management/backend/internal/handler/server_d6_form.go"
+    purpose: "管理端 D6 表单 HTTP 路由与请求绑定"
+    key_elements:
+      - element: "SetD6FormService"
+        type: function
+        location: "config-management/backend/internal/handler/server_d6_form.go:12"
+        description: "注入表单服务并注册 /api/forms 路由"
+        language: "go"
+      - element: "createForm/updateForm"
+        type: function
+        location: "config-management/backend/internal/handler/server_d6_form.go:40"
+        description: "使用 types.FormDefinition 做 ShouldBindJSON"
+        language: "go"
+    lines: 230
+  - file: "form_service.go"
+    path: "runtime-execution/internal/engine/form_service.go"
+    purpose: "D6 表单业务服务实现"
+    key_elements:
+      - element: "formService.CreateForm"
+        type: function
+        location: "runtime-execution/internal/engine/form_service.go:28"
+        description: "创建表单定义并入库"
+        language: "go"
+      - element: "formService.UpdateForm"
+        type: function
+        location: "runtime-execution/internal/engine/form_service.go:54"
+        description: "草稿态更新后调用 repo.UpdateFormDef"
+        language: "go"
+    lines: 142
+  - file: "form_repository.go"
+    path: "runtime-execution/pkg/storage/sqlserver/form_repository.go"
+    purpose: "D6 表单 SQLServer 持久化实现"
+    key_elements:
+      - element: "CreateFormDef"
+        type: function
+        location: "runtime-execution/pkg/storage/sqlserver/form_repository.go:38"
+        description: "marshal def.FormSchema 并写入 form_schema"
+        language: "go"
+      - element: "UpdateFormDef"
+        type: function
+        location: "runtime-execution/pkg/storage/sqlserver/form_repository.go:74"
+        description: "更新 form_schema 字段"
+        language: "go"
+      - element: "unmarshalFormSchema"
+        type: function
+        location: "runtime-execution/pkg/storage/sqlserver/form_repository.go:446"
+        description: "数据库 JSON 字符串恢复为 map"
+        language: "go"
+    lines: 570
+  - file: "schema_d6.sql"
+    path: "docs/storage/schema_d6.sql"
+    purpose: "D6 数据库结构定义"
+    key_elements:
+      - element: "workflow_form_definition.form_schema"
+        type: variable
+        location: "docs/storage/schema_d6.sql:16"
+        description: "表单 schema 持久化列"
+        language: "sql"
+      - element: "workflow_form_version_history.form_schema"
+        type: variable
+        location: "docs/storage/schema_d6.sql:66"
+        description: "历史版本 schema 持久化列"
+        language: "sql"
+    lines: 320
+  - file: "DynamicFormEditor.vue"
+    path: "config-management/frontend/src/components/DynamicFormEditor.vue"
+    purpose: "前端动态渲染组件契约来源"
+    key_elements:
+      - element: "schema.formName"
+        type: pattern
+        location: "config-management/frontend/src/components/DynamicFormEditor.vue:3"
+        description: "顶层 schema 需包含 formName"
+        language: "vue"
+      - element: "schema.fields"
+        type: pattern
+        location: "config-management/frontend/src/components/DynamicFormEditor.vue:7"
+        description: "字段数组驱动渲染"
+        language: "vue"
+      - element: "schema.commonApi"
+        type: pattern
+        location: "config-management/frontend/src/components/DynamicFormEditor.vue:155"
+        description: "下拉项公共接口地址"
+        language: "vue"
+    lines: 215
+patterns_found:
+  - category: structure
+    pattern: "后端接口层直接绑定共享领域模型 types.FormDefinition"
+    description: "handler 未定义独立 DTO，直接使用 runtime-execution/pkg/types"
+    examples:
+      - file: "config-management/backend/internal/handler/server_d6_form.go"
+        location: "45"
+        snippet: "var req types.FormDefinition"
+    prevalence: common
+  - category: architecture
+    pattern: "Service + Repository 分层，Repository 负责 map<->JSON 字符串转换"
+    description: "业务层传 map，存储层统一序列化 form_schema"
+    examples:
+      - file: "runtime-execution/pkg/storage/sqlserver/form_repository.go"
+        location: "39"
+        snippet: "schemaJSON, err := marshalFormSchema(def.FormSchema)"
+    prevalence: common
+  - category: naming
+    pattern: "Go/SQL 统一使用 formSchema/form_schema 命名"
+    description: "当前后端契约未包含 schema 别名"
+    examples:
+      - file: "runtime-execution/pkg/types/form_types.go"
+        location: "27"
+        snippet: "FormSchema map[string]interface{} `json:\"formSchema\"`"
+    prevalence: common
+related_architecture:
+  components_relevant_to_domain:
+    - component: "D6 Form HTTP Handler"
+      responsibility: "HTTP 参数绑定与服务调用"
+      location: "config-management/backend/internal/handler/server_d6_form.go"
+      relationship_to_domain: "表单 API 入口"
+    - component: "D6 Form Service"
+      responsibility: "表单业务规则（草稿可编辑、发布/回滚）"
+      location: "runtime-execution/internal/engine/form_service.go"
+      relationship_to_domain: "业务编排层"
+    - component: "D6 Form Repository(SQLServer)"
+      responsibility: "表单定义/版本/实例持久化"
+      location: "runtime-execution/pkg/storage/sqlserver/form_repository.go"
+      relationship_to_domain: "数据访问层"
+  interfaces_used_by_domain:
+    - interface: "api.FormService"
+      location: "runtime-execution/pkg/api/form_service.go"
+      usage_pattern: "handler 调用 service"
+    - interface: "api.FormRepository"
+      location: "runtime-execution/pkg/api/form_repository.go"
+      usage_pattern: "service 调用 repository"
+  data_flow_involving_domain: "HTTP JSON -> types.FormDefinition(FormSchema map) -> service -> repository marshal -> SQL form_schema；查询反向 unmarshal 后返回 JSON"
+  key_relationships_to_domain:
+    - from: "config-management/backend/internal/handler/server_d6_form.go"
+      to: "runtime-execution/pkg/api.FormService"
+      relationship: calls
+    - from: "runtime-execution/internal/engine/form_service.go"
+      to: "runtime-execution/pkg/api.FormRepository"
+      relationship: calls
+    - from: "runtime-execution/pkg/storage/sqlserver/form_repository.go"
+      to: "workflow_form_definition.form_schema"
+      relationship: composes
+related_technology_stack:
+  languages_used_in_domain: ["Go", "SQL", "TypeScript/Vue"]
+  frameworks_used_in_domain:
+    - name: "Gin"
+      usage_in_domain: "管理端 HTTP 路由"
+  libraries_used_in_domain:
+    - name: "database/sql"
+      purpose_in_domain: "SQL Server 读写"
+    - name: "microsoft/go-mssqldb"
+      purpose_in_domain: "SQL Server 驱动"
+  external_apis_used_in_domain:
+    - name: "DynamicFormEditor commonApi"
+      integration_point: "前端根据 schema.commonApi 拉取字段选项"
+related_conventions:
+  naming_patterns_in_domain: "Go 字段使用 FormSchema(JSON tag: formSchema)，SQL 列使用 form_schema"
+  structure_of_domain: "handler -> service -> repository 三层"
+  error_handling_in_domain: "service 返回错误字符串；handler 统一 code/message"
+  testing_in_domain: "仅发现 worker_manager_test，未发现 form 相关测试"
+  documentation_in_domain: "docs/storage/schema_d6.sql 定义了 form_schema 列"
+related_dependencies:
+  internal:
+    - component: "runtime-execution/pkg/types"
+      relationship_to_domain: "共享表单定义结构"
+      direction: bidirectional
+    - component: "runtime-execution/pkg/storage/sqlserver"
+      relationship_to_domain: "表单仓储实现"
+      direction: outbound
+  external:
+    - name: "SQL Server"
+      purpose_for_domain: "持久化 form_schema/form_data/version_history"
+domain_security_considerations:
+  sensitive_areas:
+    - area: "动态 JSON schema 反序列化"
+      location: "runtime-execution/pkg/storage/sqlserver/form_repository.go"
+      concern: "不受限 map 结构进入运行时"
+  authentication_patterns_in_domain: "D6 handler 文件未见显式鉴权中间件声明（依赖全局路由配置）"
+  authorization_patterns_in_domain: "发布/回滚接口依赖 operatorId 入参"
+  data_validation_in_domain: "create/update 仅校验 formName 非空，其余 schema 未做结构化校验"
+testing_patterns:
+  framework: "Go test"
+  coverage_areas: ["未发现 form_service/form_repository 专项测试"]
+  test_organization: "runtime-execution/internal/engine 下存在其他模块测试"
+  mock_patterns: ["未发现 form 域 mock 用例"]
+open_questions:
+  - question: "config-management/backend/cmd/api/main.go 是否应在启动时注入 SetD6FormService？"
+    context: "当前仅创建 wfRepo，未见 form service 注入调用"
+    type: decision_blocker
+    affects: ["/api/forms 路由可用性", "schema 契约验证链路"]
+  - question: "前端最终契约是否统一为 schema（对象）还是 formSchema（字符串/对象）？"
+    context: "DynamicFormEditor 使用 schema；FormDesigner/types 使用 formSchema 字符串"
+    type: decision_blocker
+    affects: ["Go DTO 字段设计", "前端 API 封装", "回归兼容性"]
+gaps:
+  - area: "PRD 来源"
+    description: "知识源要求中的 docs/PRD.yaml 在仓库不存在"
+    impact: research_blocker
+    affects: ["in_scope/out_of_scope 的 PRD 级校验"]
+  - area: "schema 字段别名"
+    description: "Go FormDefinition 未提供 json:\"schema\" 同义字段，DynamicFormEditor 无法直接消费后端对象"
+    impact: decision_blocker
+    affects: ["组件数据绑定", "接口兼容"]
+  - area: "config-management backend D6 注入链"
+    description: "cmd/api/main.go 未调用 SetD6FormService"
+    impact: decision_blocker
+    affects: ["D6 表单接口可访问性", "契约联调"]

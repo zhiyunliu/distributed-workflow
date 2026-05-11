@@ -19,6 +19,7 @@ import (
 	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/handler"
 	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/service"
 	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/sysmodel"
+	workflowengine "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/engine"
 	wfstore "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/storage/sqlserver"
 )
 
@@ -65,10 +66,29 @@ func main() {
 	defer wfRepo.Close()
 
 	// HTTP 服务：注入依赖并注册路由
+	formRepo := wfstore.NewFormRepository(wfRepo.DB())
+	workflowEngine := workflowengine.New(
+		workflowengine.Config{GRPCAddr: "127.0.0.1:0"},
+		wfRepo,
+		nil,
+		nil,
+		formRepo,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+
 	srv := handler.NewServer()
 	srv.SetSysManager(mgr, jwtSecret)
 	srv.SetD4WorkflowRoutes()
+	srv.SetD6FormService(workflowEngine.FormService())
 	srv.RegisterFrontendRoutes() // 注册前端路由
+	if workflowEngine.FormService() == nil {
+		log.Println("D6 form service injection missing")
+	} else {
+		log.Println("D6 form service injected")
+	}
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

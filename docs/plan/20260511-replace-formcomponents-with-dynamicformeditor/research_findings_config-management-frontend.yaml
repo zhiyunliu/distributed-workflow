@@ -1,0 +1,292 @@
+plan_id: 20260511-replace-formcomponents-with-dynamicformeditor
+objective: 精确定位前端中 FormComponents 的使用与可替换落点，给出最小改动方案（不改 DynamicFormEditor 逻辑，仅样式可改）
+focus_area: config-management frontend
+created_at: 2026-05-11
+created_by: GitHub Copilot (GPT-5.3-Codex)
+status: completed
+tldr: |
+  - FormComponents 仅存在于组件声明文件，当前无业务页面直接引用。
+  - DynamicFormEditor 目前未被任何页面接入，属于未接线组件。
+  - 现有表单设计链路围绕 FormDesigner 的 schema 字段结构（name/type/options）展开。
+  - DynamicFormEditor 使用另一套 schema（key/type/commonApi/columns），与 FormDesigner 不兼容。
+  - 前端存在已有路由路径与参数命名不一致，会影响接入验证路径。
+research_metadata:
+  methodology: semantic/grep 搜索 + 关键文件逐段读取 + 依赖关系核对
+  scope: config-management/frontend 下表单相关组件、视图、路由、API、类型定义
+  confidence: high
+  coverage: 92
+  decision_blockers: 1
+  research_blockers: 1
+files_analyzed:
+  - file: FormComponents.vue
+    path: config-management/frontend/src/components/FormComponents.vue
+    purpose: 旧动态表单渲染组件（候选被替换对象）
+    key_elements:
+      - element: FormField
+        type: pattern
+        location: config-management/frontend/src/components/FormComponents.vue:12
+        description: 使用 text/textarea/number/select/date/checkbox/radio 类型集合
+        language: vue
+      - element: fields/modelValue props
+        type: pattern
+        location: config-management/frontend/src/components/FormComponents.vue:19
+        description: 依赖 fields 和 modelValue 双向更新
+        language: vue
+    lines: 139
+  - file: DynamicFormEditor.vue
+    path: config-management/frontend/src/components/DynamicFormEditor.vue
+    purpose: 新动态表单组件（拟接入对象）
+    key_elements:
+      - element: schema.formName + schema.fields
+        type: pattern
+        location: config-management/frontend/src/components/DynamicFormEditor.vue:3
+        description: 组件输入为 schema 对象
+        language: vue
+      - element: field.key / field.type
+        type: pattern
+        location: config-management/frontend/src/components/DynamicFormEditor.vue:8
+        description: 以 key 作为字段标识，type 使用 input/selectMultiple/table/switch 等
+        language: vue
+      - element: commonApi + field.apiParams
+        type: pattern
+        location: config-management/frontend/src/components/DynamicFormEditor.vue:155
+        description: 下拉选项通过 axios 直接请求 commonApi
+        language: vue
+    lines: 208
+  - file: FormDesigner.vue
+    path: config-management/frontend/src/views/FormDesigner.vue
+    purpose: 当前表单 schema 设计与保存主入口
+    key_elements:
+      - element: FormField
+        type: pattern
+        location: config-management/frontend/src/views/FormDesigner.vue:11
+        description: 设计器字段结构以 name 为主键，type 为 text/textarea/number/select/date/checkbox/radio
+        language: vue
+      - element: formSchema read/write
+        type: function
+        location: config-management/frontend/src/views/FormDesigner.vue:75
+        description: 读取 def.formSchema 并回填 fields，保存/发布时写回 JSON.stringify({ fields })
+        language: vue
+      - element: route.params.id
+        type: variable
+        location: config-management/frontend/src/views/FormDesigner.vue:29
+        description: 使用 id 参数读取路由，和路由定义 :formId 不一致
+        language: vue
+    lines: 211
+  - file: FormList.vue
+    path: config-management/frontend/src/views/FormList.vue
+    purpose: 表单管理入口与设计页跳转
+    key_elements:
+      - element: goDesigner
+        type: function
+        location: config-management/frontend/src/views/FormList.vue:113
+        description: 当前跳转到 /form/designer/${row.formId}
+        language: vue
+    lines: 211
+  - file: index.ts
+    path: config-management/frontend/src/router/index.ts
+    purpose: 路由接入点
+    key_elements:
+      - element: FormDesigner routes
+        type: pattern
+        location: config-management/frontend/src/router/index.ts:83
+        description: 实际路由为 forms/designer 与 forms/designer/:formId
+        language: typescript
+    lines: 164
+  - file: form.ts
+    path: config-management/frontend/src/api/form.ts
+    purpose: formSchema 的后端读写 API
+    key_elements:
+      - element: formApi.get/update/publish
+        type: function
+        location: config-management/frontend/src/api/form.ts:11
+        description: 设计器读取与持久化依赖这些接口
+        language: typescript
+    lines: 51
+  - file: form.ts
+    path: config-management/frontend/src/types/form.ts
+    purpose: 表单定义与实例类型
+    key_elements:
+      - element: FormDefinition.formSchema
+        type: variable
+        location: config-management/frontend/src/types/form.ts:15
+        description: formSchema 当前仅定义为 string
+        language: typescript
+    lines: 53
+  - file: components.d.ts
+    path: config-management/frontend/src/components.d.ts
+    purpose: 自动组件类型声明
+    key_elements:
+      - element: GlobalComponents.FormComponents
+        type: pattern
+        location: config-management/frontend/src/components.d.ts:52
+        description: 仍声明 FormComponents，未见 DynamicFormEditor 声明
+        language: typescript
+    lines: 59
+  - file: tsconfig.json
+    path: config-management/frontend/tsconfig.json
+    purpose: 类型检查边界
+    key_elements:
+      - element: strict
+        type: variable
+        location: config-management/frontend/tsconfig.json:14
+        description: 严格模式开启，替换后 schema 适配若引入 TS 类型会受约束
+        language: json
+    lines: 24
+patterns_found:
+  - category: architecture
+    pattern: 表单 schema 以字符串 formSchema 存储，页面层负责 JSON parse/stringify
+    description: API 仅传输字符串，结构校验主要发生在前端视图层
+    examples:
+      - file: config-management/frontend/src/views/FormDesigner.vue
+        location: 75
+        snippet: const schema = JSON.parse(def.formSchema || '{}')
+      - file: config-management/frontend/src/views/FormDesigner.vue
+        location: 88
+        snippet: JSON.stringify({ fields: fields.value })
+    prevalence: common
+  - category: structure
+    pattern: 设计器 schema 与渲染组件 schema 双轨并存
+    description: FormDesigner 与 DynamicFormEditor 的字段命名、类型枚举、扩展属性不一致
+    examples:
+      - file: config-management/frontend/src/views/FormDesigner.vue
+        location: 11
+        snippet: type: 'text' | 'textarea' | 'number' | 'select' | 'date' | 'checkbox' | 'radio'
+      - file: config-management/frontend/src/components/DynamicFormEditor.vue
+        location: 15
+        snippet: field.type === 'input'
+      - file: config-management/frontend/src/components/DynamicFormEditor.vue
+        location: 63
+        snippet: field.type === 'selectMultiple'
+    prevalence: common
+  - category: naming
+    pattern: 字段主键命名存在 name vs key 差异
+    description: 旧链路使用 field.name，新组件使用 field.key
+    examples:
+      - file: config-management/frontend/src/components/FormComponents.vue
+        location: 49
+        snippet: :key="field.name"
+      - file: config-management/frontend/src/components/DynamicFormEditor.vue
+        location: 8
+        snippet: :key="field.key"
+    prevalence: common
+  - category: error_handling
+    pattern: 异常以 UI 消息提示为主，吞掉细节异常
+    description: catch 分支普遍直接 ElMessage.error
+    examples:
+      - file: config-management/frontend/src/views/FormDesigner.vue
+        location: 80
+        snippet: ElMessage.error('加载表单失败')
+      - file: config-management/frontend/src/components/DynamicFormEditor.vue
+        location: 164
+        snippet: ElMessage.error('加载选项失败')
+    prevalence: common
+related_architecture:
+  components_relevant_to_domain:
+    - component: FormDesigner view
+      responsibility: 设计字段、生成 schema、保存发布
+      location: config-management/frontend/src/views/FormDesigner.vue
+      relationship_to_domain: 当前唯一 formSchema 编辑主入口
+    - component: FormList view
+      responsibility: 列表管理并跳转设计器
+      location: config-management/frontend/src/views/FormList.vue
+      relationship_to_domain: 入口页，决定设计器接入路径
+    - component: FormComponents
+      responsibility: 旧表单渲染组件
+      location: config-management/frontend/src/components/FormComponents.vue
+      relationship_to_domain: 候选替换对象但当前未接线
+    - component: DynamicFormEditor
+      responsibility: 新动态渲染组件
+      location: config-management/frontend/src/components/DynamicFormEditor.vue
+      relationship_to_domain: 未接线候选组件
+  interfaces_used_by_domain:
+    - interface: formApi.get
+      location: config-management/frontend/src/api/form.ts:21
+      usage_pattern: 读取 formSchema 字符串
+    - interface: formApi.update
+      location: config-management/frontend/src/api/form.ts:25
+      usage_pattern: 保存 formSchema 字符串
+    - interface: formApi.publish
+      location: config-management/frontend/src/api/form.ts:29
+      usage_pattern: 发布前先 update
+  data_flow_involving_domain: FormList 跳转 -> FormDesigner 按 formId 拉取 formSchema -> JSON.parse 得到 fields -> 编辑后 JSON.stringify 回写 -> publish
+  key_relationships_to_domain:
+    - from: FormList.vue
+      to: FormDesigner.vue
+      relationship: calls
+    - from: FormDesigner.vue
+      to: api/form.ts
+      relationship: calls
+    - from: api/form.ts
+      to: backend /api/forms
+      relationship: calls
+related_technology_stack:
+  languages_used_in_domain: [TypeScript, Vue SFC, JSON]
+  frameworks_used_in_domain:
+    - name: Vue 3
+      usage_in_domain: 表单设计页面与动态组件实现
+    - name: Element Plus
+      usage_in_domain: 表单控件与布局
+  libraries_used_in_domain:
+    - name: axios
+      purpose_in_domain: DynamicFormEditor 直接拉取选项接口
+    - name: vue-router
+      purpose_in_domain: 设计器路由接入与参数读取
+  external_apis_used_in_domain:
+    - name: /api/forms
+      integration_point: formApi
+    - name: schema.commonApi
+      integration_point: DynamicFormEditor.loadAllOptions
+related_conventions:
+  naming_patterns_in_domain: 页面层字段多用 name，新组件字段使用 key
+  structure_of_domain: views 管理业务流，components 存放通用渲染器，api/types 独立
+  error_handling_in_domain: 统一 ElMessage 提示
+  testing_in_domain: 未发现前端单测文件
+  documentation_in_domain: 以代码内注释和 docs/plan 研究文档为主
+related_dependencies:
+  internal:
+    - component: src/views/FormDesigner.vue
+      relationship_to_domain: schema 生成与持久化
+      direction: outbound
+    - component: src/api/form.ts
+      relationship_to_domain: API 封装
+      direction: outbound
+    - component: src/router/index.ts
+      relationship_to_domain: 入口路由定义
+      direction: inbound
+  external:
+    - name: element-plus
+      purpose_for_domain: UI 表单组件
+    - name: axios
+      purpose_for_domain: HTTP 请求
+domain_security_considerations:
+  sensitive_areas:
+    - area: schema.commonApi 动态请求
+      location: config-management/frontend/src/components/DynamicFormEditor.vue:161
+      concern: 接口地址来自 schema 时存在误配与越权请求面
+  authentication_patterns_in_domain: request.ts 拦截器统一注入 Bearer token
+  authorization_patterns_in_domain: 401 时清理 token 并跳登录
+  data_validation_in_domain: 前端仅基础 required/regex，schema 结构无统一 runtime 校验
+testing_patterns:
+  framework: 未检索到前端测试框架使用痕迹
+  coverage_areas: [表单设计器、动态渲染组件未见自动化测试]
+  test_organization: N/A
+  mock_patterns: []
+open_questions:
+  - question: 目标替换是“设计器预览区渲染替换”还是“线上表单填写页替换”？
+    context: 当前仓库未发现任何实际表单填写页使用 FormComponents
+    type: decision_blocker
+    affects: [接入点范围, 最小改动边界]
+  - question: 后端持久化 formSchema 是否允许升级为 key/input/selectMultiple 结构，或必须维持 name/text 结构？
+    context: 两套 schema 当前不兼容
+    type: research
+    affects: [schema 适配层是否必须]
+gaps:
+  - area: PRD 文件缺失
+    description: 未发现 docs/PRD.yaml，无法对 in_scope/out_of_scope 做文档级核验
+    impact: research_blocker
+    affects: [范围确认]
+  - area: 运行态真实调用链
+    description: 当前仅静态分析，未执行端到端页面操作验证表单提交流
+    impact: nice_to_know
+    affects: [回归风险评估]

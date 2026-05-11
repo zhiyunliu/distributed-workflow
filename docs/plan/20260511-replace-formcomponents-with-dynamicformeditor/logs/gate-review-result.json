@@ -1,0 +1,106 @@
+{
+  "status": "failed",
+  "task_id": "T-RV-00",
+  "plan_id": "20260511-replace-formcomponents-with-dynamicformeditor",
+  "summary": "Pre-QA Boundary Gate审查失败。DynamicFormEditor.vue中的6个基线业务方法（onMounted/loadAllOptions/getRules/addTableRow/delTableRow/submitForm）被完全删除，直接违反了plan冻结约束'保留现有业务逻辑无删除或重构改动'。此为CRITICAL级别约束违反，不得进入T-QA-01。",
+  "failure_type": "fixable",
+  "extra": {
+    "review_scope": "task",
+    "findings": [
+      {
+        "category": "Constraint Violation",
+        "severity": "critical",
+        "description": "DynamicFormEditor.vue删除了6个基线业务方法：onMounted()、loadAllOptions()、getRules()、addTableRow()、delTableRow()、submitForm()。违反了plan冻结约束'DynamicFormEditor复用现有业务逻辑无删除或重构改动'。",
+        "location": "config-management/frontend/src/components/DynamicFormEditor.vue",
+        "recommendation": "必须回滚删除操作，恢复所有6个业务方法到DynamicFormEditor.vue中。DynamicFormEditor应为完整的可复用动态表单编辑器，而非纯展示层。"
+      },
+      {
+        "category": "Architecture Violation",
+        "severity": "critical",
+        "description": "DynamicFormEditor被改造为纯展示层（仅:disabled=readonly），FormDesigner接管了所有编辑逻辑。这导致组件职责混淆，与'DynamicFormEditor作为可复用编辑器'的设计相悖。",
+        "location": "config-management/frontend/src/components/DynamicFormEditor.vue + config-management/frontend/src/views/FormDesigner.vue",
+        "recommendation": "重新评估架构。DynamicFormEditor应保留完整编辑能力（v-model、验证、字段编辑），FormDesigner应作为高层编排，而非替代。"
+      },
+      {
+        "category": "Code Quality",
+        "severity": "medium",
+        "description": "DynamicFormEditor的git diff显示删除127行（包括所有业务方法），新增143行（样式和readonly绑定），不符合'删除>>添加'的样式调整预期。",
+        "location": "config-management/frontend/src/components/DynamicFormEditor.vue",
+        "recommendation": "git diff应显示仅样式修改，删除行数应远大于添加行数。目前删除的是关键业务逻辑，非样式代码。"
+      }
+    ],
+    "security_issues": [],
+    "prd_compliance_issues": [
+      {
+        "criterion": "DynamicFormEditor保留现有业务逻辑（plan冻结约束）",
+        "status": "fail",
+        "details": "onMounted、loadAllOptions、getRules、addTableRow、delTableRow、submitForm等基线能力已被删除，违反了冻结约束。"
+      },
+      {
+        "criterion": "DynamicFormEditor仅允许样式调整（plan冻结约束）",
+        "status": "fail",
+        "details": "所有业务逻辑方法都被删除，这不是样式调整，是架构改变。"
+      },
+      {
+        "criterion": "FormDesigner作为编排层（plan冻结约束）",
+        "status": "pass",
+        "details": "FormDesigner正确新增了所有业务逻辑方法，集中管理编辑状态，saveForm返回boolean。"
+      },
+      {
+        "criterion": "Repository零改动约束（plan冻结约束）",
+        "status": "pass",
+        "details": "form_repository.go无改动，SQL schema无改动，符合约束。"
+      },
+      {
+        "criterion": "schema/formSchema优先级一致性（plan冻结约束）",
+        "status": "pass",
+        "details": "FE和BE均已实现schema > formSchema的优先级规则。"
+      }
+    ],
+    "task_completion_check": {
+      "files_created": [],
+      "files_modified": [
+        "config-management/frontend/src/components/DynamicFormEditor.vue",
+        "config-management/frontend/src/views/FormDesigner.vue",
+        "config-management/frontend/src/router/index.ts",
+        "config-management/frontend/src/types/form.ts",
+        "config-management/backend/cmd/api/main.go",
+        "config-management/backend/internal/handler/server_d6_form.go",
+        "runtime-execution/internal/common/types/form_types.go",
+        "runtime-execution/pkg/types/form_types.go",
+        "runtime-execution/internal/engine/form_service.go"
+      ],
+      "files_exist": true,
+      "coverage_status": {
+        "T-FE-03-designer-integration": "FAIL - 违反约束",
+        "T-BE-02-handler-normalization": "PASS - 实现正确",
+        "schema-adapter-usage": "PASS - 正确使用",
+        "route-compatibility": "PASS - 正确实现",
+        "type-contracts": "PASS - 正确实现"
+      },
+      "acceptance_criteria_met": [
+        "FormDesigner通过适配层接入DynamicFormEditor - PASS",
+        "所有编辑交互逻辑集中在FormDesigner - PASS",
+        "saveForm返回boolean，publish包含短路判断 - PASS",
+        "npm run build通过 - PASS"
+      ],
+      "acceptance_criteria_missing": [
+        "DynamicFormEditor复用现有业务逻辑 - FAIL（业务逻辑被删除）",
+        "DynamicFormEditor保留所有基线能力 - FAIL（6个方法被删除）",
+        "仅样式调整，无业务逻辑改动 - FAIL（删除了业务方法）",
+        "DynamicFormEditor可独立使用 - FAIL（无编辑能力）"
+      ]
+    },
+    "architectural_checks": {
+      "simplicity": "fail",
+      "reason": "组件职责不清晰，DynamicFormEditor变为纯展示层，破坏了组件的独立可复用性。"
+    },
+    "anti_abstraction": "pass",
+    "integration_first": "fail",
+    "reason": "DynamicFormEditor与FormDesigner的集成方式导致DynamicFormEditor无法独立使用，违反了集成优先的原则。"
+  },
+  "confidence": 0.98,
+  "next_action": "Return to dev for constraint violation fixes",
+  "escalation_required": false,
+  "blocking_gate": true
+}

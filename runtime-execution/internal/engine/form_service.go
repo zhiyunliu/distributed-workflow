@@ -24,8 +24,18 @@ func NewFormService(repo api.FormRepository) api.FormService {
 	return &formService{repo: repo}
 }
 
+func normalizeFormDefinition(def *types.FormDefinition) error {
+	if def == nil {
+		return fmt.Errorf("表单定义不能为空")
+	}
+	return def.NormalizeSchema(def.Schema, def.FormSchema)
+}
+
 // CreateForm 创建表单定义
 func (s *formService) CreateForm(ctx context.Context, def *types.FormDefinition) error {
+	if err := normalizeFormDefinition(def); err != nil {
+		return err
+	}
 	if def.FormName == "" {
 		return fmt.Errorf("表单名称不能为空")
 	}
@@ -47,6 +57,9 @@ func (s *formService) GetForm(ctx context.Context, formID string) (*types.FormDe
 	if def == nil {
 		return nil, fmt.Errorf("表单不存在")
 	}
+	if err := normalizeFormDefinition(def); err != nil {
+		return nil, err
+	}
 	return def, nil
 }
 
@@ -62,13 +75,28 @@ func (s *formService) UpdateForm(ctx context.Context, def *types.FormDefinition)
 	if existing.Status != types.FormStatusDraft {
 		return fmt.Errorf("只有草稿状态的表单可以修改")
 	}
+	if err := normalizeFormDefinition(def); err != nil {
+		return err
+	}
 	def.UpdatedAt = time.Now()
 	return s.repo.UpdateFormDef(ctx, def)
 }
 
 // ListForms 分页查询表单列表
 func (s *formService) ListForms(ctx context.Context, params types.FormListParams) ([]*types.FormDefinition, int64, error) {
-	return s.repo.ListFormDefs(ctx, params)
+	list, total, err := s.repo.ListFormDefs(ctx, params)
+	if err != nil {
+		return nil, 0, err
+	}
+	for _, def := range list {
+		if def == nil {
+			continue
+		}
+		if err := normalizeFormDefinition(def); err != nil {
+			return nil, 0, err
+		}
+	}
+	return list, total, nil
 }
 
 // PublishForm 发布表单版本
@@ -142,5 +170,3 @@ func (s *formService) GetFormInstance(ctx context.Context, instanceID string) (*
 func (s *formService) GetFormInstanceByWorkflow(ctx context.Context, workflowInstanceID, nodeID string) (*types.FormInstance, error) {
 	return s.repo.GetFormInstanceByWorkflow(ctx, workflowInstanceID, nodeID)
 }
-
-
