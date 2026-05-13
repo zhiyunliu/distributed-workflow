@@ -1,0 +1,66 @@
+{
+  "timestamp": "2026-05-13T17:30:39.4284250+08:00",
+  "go_compile": [
+    {
+      "component": "backend",
+      "exit": 0
+    },
+    {
+      "component": "engine",
+      "exit": 0
+    },
+    {
+      "component": "worker",
+      "exit": 0
+    }
+  ],
+  "go_compile_all_pass": true,
+  "dependency_ports": {
+    "port6379": true,
+    "port1433": true
+  },
+  "pids": {
+    "worker": 36388,
+    "backend": 37540,
+    "engine": 19756
+  },
+  "listeners": [
+    {
+      "port": 7080,
+      "listening": true,
+      "pid": 23900
+    },
+    {
+      "port": 8081,
+      "listening": true,
+      "pid": 25748
+    },
+    {
+      "port": 50051,
+      "listening": true,
+      "pid": 25748
+    },
+    {
+      "port": 50052,
+      "listening": true,
+      "pid": 20940
+    }
+  ],
+  "listeners_pass": true,
+  "alive_ge_60s": false,
+  "alive_failures": [
+    "process_not_found_before_60s:37540",
+    "process_not_found_before_60s:19756",
+    "process_not_found_before_60s:36388"
+  ],
+  "no_fatal_panic": true,
+  "fatal_samples": null,
+  "logs": [
+    "docs\\plan\\20260511-build-startup-validation\\logs\\t5-backend-20260513-173026.out.log",
+    "docs\\plan\\20260511-build-startup-validation\\logs\\t5-backend-20260513-173026.err.log",
+    "docs\\plan\\20260511-build-startup-validation\\logs\\t5-engine-20260513-173026.out.log",
+    "docs\\plan\\20260511-build-startup-validation\\logs\\t5-engine-20260513-173026.err.log",
+    "docs\\plan\\20260511-build-startup-validation\\logs\\t5-worker-20260513-173026.out.log",
+    "docs\\plan\\20260511-build-startup-validation\\logs\\t5-worker-20260513-173026.err.log"
+  ]
+}

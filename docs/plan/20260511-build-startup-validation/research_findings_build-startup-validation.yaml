@@ -1,0 +1,328 @@
+plan_id: "20260511-build-startup-validation"
+objective: "核验一键构建/启动入口、frontend/backend/engine/worker实际启动命令与健康检查命令"
+focus_area: "build_startup_and_healthcheck"
+created_at: "2026-05-11T00:00:00+08:00"
+created_by: "gem-researcher"
+status: completed
+tldr: |
+  - Makefile 提供一键构建目标 `build-all`，但未提供一键启动目标。
+  - docker-compose.yml 已具备多服务统一启动与服务级 healthcheck，README 未提供统一启动流程。
+  - frontend/backend/engine/worker 的入口文件均明确，local 启动命令可由入口路径直接映射为 `go run`/`npm run dev`。
+  - 健康检查存在实现-编排不一致：compose/Dockerfile 使用 `/api/v1/health`，但 backend 与 runtime-execution HTTP 路由未检索到该路径。
+  - 依赖约束下的顺序链路为：sqlserver+redis -> backend -> frontend；engine/worker 为独立运行链路（worker 依赖 engine gRPC）。
+research_metadata:
+  methodology: "semantic_search + grep_search + read_file + 入口关系发现"
+  scope: "Makefile/README/docker-compose + frontend/backend/engine/worker 启动与健康检查"
+  confidence: high
+  coverage: 93
+  decision_blockers: 1
+  research_blockers: 1
+files_analyzed:
+  - file: "Makefile"
+    path: "Makefile"
+    purpose: "核验一键构建/启动目标"
+    key_elements:
+      - element: "build-all"
+        type: function
+        location: "Makefile:17"
+        description: "聚合 build-frontend 与 build-backend 的一键构建目标"
+        language: "makefile"
+      - element: "build-frontend"
+        type: function
+        location: "Makefile:19"
+        description: "调用 build-frontend.bat 构建前端并复制 dist 到 backend"
+        language: "makefile"
+      - element: "build-backend"
+        type: function
+        location: "Makefile:22"
+        description: "编译 config-management backend api"
+        language: "makefile"
+    lines: 44
+  - file: "README.md"
+    path: "README.md"
+    purpose: "核验文档中是否存在统一 build/start 命令"
+    key_elements:
+      - element: "go run ./examples/serial/"
+        type: pattern
+        location: "README.md:63"
+        description: "仅提供示例运行命令，未覆盖 frontend/backend/engine/worker 一键启动流程"
+        language: "markdown"
+    lines: 105
+  - file: "docker-compose.yml"
+    path: "docker-compose.yml"
+    purpose: "核验 compose 统一启动能力与健康检查命令"
+    key_elements:
+      - element: "services.backend.healthcheck.test"
+        type: pattern
+        location: "docker-compose.yml:69"
+        description: "使用 curl -sf http://localhost:8080/api/v1/health"
+        language: "yaml"
+      - element: "depends_on.condition: service_healthy"
+        type: pattern
+        location: "docker-compose.yml:54"
+        description: "backend 依赖 sqlserver/redis 健康；frontend 依赖 backend 健康"
+        language: "yaml"
+    lines: 92
+  - file: "config-management/frontend/package.json"
+    path: "config-management/frontend/package.json"
+    purpose: "确认 frontend 实际启动/构建脚本"
+    key_elements:
+      - element: "scripts.dev"
+        type: variable
+        location: "config-management/frontend/package.json:7"
+        description: "frontend 本地启动命令为 vite"
+        language: "json"
+      - element: "scripts.build"
+        type: variable
+        location: "config-management/frontend/package.json:8"
+        description: "frontend 构建命令为 vue-tsc --noEmit && vite build"
+        language: "json"
+    lines: 31
+  - file: "config-management/backend/cmd/api/main.go"
+    path: "config-management/backend/cmd/api/main.go"
+    purpose: "确认 backend 启动入口与环境变量"
+    key_elements:
+      - element: "main"
+        type: function
+        location: "config-management/backend/cmd/api/main.go:27"
+        description: "读取 DB_DSN/JWT_SECRET/HTTP_ADDR 后启动 handler.Server"
+        language: "go"
+      - element: "srv.Start(httpAddr)"
+        type: pattern
+        location: "config-management/backend/cmd/api/main.go:96"
+        description: "backend HTTP 服务启动调用"
+        language: "go"
+    lines: 105
+  - file: "runtime-execution/cmd/engine/main.go"
+    path: "runtime-execution/cmd/engine/main.go"
+    purpose: "确认 engine 启动入口与端口配置"
+    key_elements:
+      - element: "main"
+        type: function
+        location: "runtime-execution/cmd/engine/main.go:22"
+        description: "读取 DB_DSN/REDIS_ADDR/GRPC_ADDR/HTTP_ADDR，启动 engine 与 HTTP endpoint"
+        language: "go"
+      - element: "eng.Start"
+        type: function
+        location: "runtime-execution/cmd/engine/main.go:54"
+        description: "engine 核心服务启动"
+        language: "go"
+    lines: 78
+  - file: "runtime-execution/cmd/worker/main.go"
+    path: "runtime-execution/cmd/worker/main.go"
+    purpose: "确认 worker 启动入口与依赖"
+    key_elements:
+      - element: "main"
+        type: function
+        location: "runtime-execution/cmd/worker/main.go:21"
+        description: "读取 ENGINE_ADDR/WORKER_ID/WORKER_IP/GRPC_ADDR 并启动 worker"
+        language: "go"
+      - element: "w.Start"
+        type: function
+        location: "runtime-execution/cmd/worker/main.go:48"
+        description: "worker 启动调用"
+        language: "go"
+    lines: 64
+  - file: "runtime-execution/pkg/endpoint/http/server.go"
+    path: "runtime-execution/pkg/endpoint/http/server.go"
+    purpose: "核验 engine HTTP 路由是否存在 health endpoint"
+    key_elements:
+      - element: "registerRoutes"
+        type: function
+        location: "runtime-execution/pkg/endpoint/http/server.go:37"
+        description: "仅注册 workflows/instances 等业务路由，未见 /health"
+        language: "go"
+    lines: 278
+  - file: "config-management/backend/internal/handler/server.go"
+    path: "config-management/backend/internal/handler/server.go"
+    purpose: "核验 backend 基础 HTTP server 是否注册 health endpoint"
+    key_elements:
+      - element: "NewServer"
+        type: function
+        location: "config-management/backend/internal/handler/server.go:32"
+        description: "创建 gin 引擎，未在该文件中注册 health 路由"
+        language: "go"
+    lines: 48
+  - file: "Dockerfile"
+    path: "Dockerfile"
+    purpose: "核验容器构建入口与健康检查"
+    key_elements:
+      - element: "go build -o /app/server ./cmd/server/main.go"
+        type: pattern
+        location: "Dockerfile:15"
+        description: "容器构建入口指向 cmd/server/main.go"
+        language: "dockerfile"
+      - element: "HEALTHCHECK"
+        type: pattern
+        location: "Dockerfile:28"
+        description: "使用 curl -sf http://localhost:8080/api/v1/health"
+        language: "dockerfile"
+    lines: 31
+  - file: "build-frontend.sh"
+    path: "build-frontend.sh"
+    purpose: "核验前端构建脚本有效性"
+    key_elements:
+      - element: "@echo off"
+        type: pattern
+        location: "build-frontend.sh:1"
+        description: "shell 脚本文件首行出现批处理内容，且后续混入 bash 片段"
+        language: "shell"
+    lines: 66
+patterns_found:
+  - category: structure
+    pattern: "构建与运行入口分散在 Makefile、compose、main.go、package.json"
+    description: "统一构建存在（make build-all），统一启动主要依赖 compose，源码级入口由各 main.go 显式声明"
+    examples:
+      - file: "Makefile"
+        location: "Makefile:17"
+        snippet: "build-all: build-frontend build-backend"
+      - file: "docker-compose.yml"
+        location: "docker-compose.yml:3"
+        snippet: "services: sqlserver/redis/backend/frontend"
+      - file: "runtime-execution/cmd/engine/main.go"
+        location: "runtime-execution/cmd/engine/main.go:22"
+        snippet: "func main() { ... }"
+    prevalence: common
+  - category: architecture
+    pattern: "依赖驱动启动顺序通过 compose depends_on + healthcheck 固化"
+    description: "backend 等待 sqlserver/redis healthy，frontend 等待 backend healthy"
+    examples:
+      - file: "docker-compose.yml"
+        location: "docker-compose.yml:54"
+        snippet: "condition: service_healthy"
+    prevalence: common
+  - category: error_handling
+    pattern: "启动阶段环境变量缺失即 fatal 退出"
+    description: "backend/engine/worker 在 envOrFatal 中统一强制检查关键变量"
+    examples:
+      - file: "config-management/backend/cmd/api/main.go"
+        location: "config-management/backend/cmd/api/main.go:29"
+        snippet: "dsn := envOrFatal(\"DB_DSN\")"
+      - file: "runtime-execution/cmd/worker/main.go"
+        location: "runtime-execution/cmd/worker/main.go:21"
+        snippet: "engineAddr := envOrFatal(\"ENGINE_ADDR\")"
+    prevalence: common
+related_architecture:
+  components_relevant_to_domain:
+    - component: "compose stack"
+      responsibility: "统一编排 sqlserver/redis/backend/frontend 生命周期"
+      location: "docker-compose.yml"
+      relationship_to_domain: "提供一键 start 能力和依赖顺序"
+    - component: "config-management backend api"
+      responsibility: "管理端 HTTP API"
+      location: "config-management/backend/cmd/api/main.go"
+      relationship_to_domain: "backend 本地启动入口"
+    - component: "runtime engine"
+      responsibility: "工作流调度中心（gRPC+HTTP）"
+      location: "runtime-execution/cmd/engine/main.go"
+      relationship_to_domain: "engine 启动入口"
+    - component: "runtime worker"
+      responsibility: "执行节点处理任务并上报"
+      location: "runtime-execution/cmd/worker/main.go"
+      relationship_to_domain: "worker 启动入口"
+    - component: "frontend vite/nginx"
+      responsibility: "前端开发/静态托管"
+      location: "config-management/frontend/package.json"
+      relationship_to_domain: "frontend 启动入口"
+  interfaces_used_by_domain:
+    - interface: "docker compose service healthcheck"
+      location: "docker-compose.yml"
+      usage_pattern: "sqlcmd/redis-cli/curl 探活"
+    - interface: "NodeWorkerService.HealthCheck (gRPC)"
+      location: "runtime-execution/internal/worker/server.go:92"
+      usage_pattern: "worker 侧 gRPC 健康检查接口"
+  data_flow_involving_domain: "依赖链路为 SQLServer/Redis -> backend -> frontend；engine/worker 通过 gRPC 互联且 worker 依赖 engine 地址"
+  key_relationships_to_domain:
+    - from: "Makefile build-all"
+      to: "build-frontend + build-backend"
+      relationship: calls
+    - from: "frontend"
+      to: "backend"
+      relationship: depends_on
+    - from: "worker"
+      to: "engine"
+      relationship: calls
+related_technology_stack:
+  languages_used_in_domain: ["Go", "TypeScript", "YAML", "Dockerfile", "Batch", "Shell"]
+  frameworks_used_in_domain:
+    - name: "Gin"
+      usage_in_domain: "backend 与 engine HTTP 服务"
+    - name: "Vite"
+      usage_in_domain: "frontend dev/build"
+    - name: "Docker Compose"
+      usage_in_domain: "多服务启动编排"
+  libraries_used_in_domain:
+    - name: "go-mssqldb"
+      purpose_in_domain: "SQL Server 连接"
+    - name: "redis/go-redis"
+      purpose_in_domain: "engine Redis 依赖"
+  external_apis_used_in_domain:
+    - name: "NodeWorkerService.HealthCheck"
+      integration_point: "runtime-execution/internal/worker/server.go"
+related_conventions:
+  naming_patterns_in_domain: "启动入口集中在 cmd/*/main.go；前端脚本集中于 package.json scripts"
+  structure_of_domain: "构建层（Makefile/脚本）与运行层（compose/main.go）分离"
+  error_handling_in_domain: "关键配置使用 envOrFatal 强校验"
+  testing_in_domain: "本次范围未发现 build/start 专项自动化测试文件"
+  documentation_in_domain: "README 偏架构与示例，不含完整一键启动实操流程"
+related_dependencies:
+  internal:
+    - component: "config-management/backend"
+      relationship_to_domain: "被 Makefile build-backend 与 compose backend 使用"
+      direction: inbound
+    - component: "runtime-execution/cmd/engine"
+      relationship_to_domain: "独立运行时入口"
+      direction: inbound
+    - component: "runtime-execution/cmd/worker"
+      relationship_to_domain: "依赖 engine 地址启动"
+      direction: outbound
+  external:
+    - name: "SQL Server"
+      purpose_for_domain: "backend/engine 启动必需持久化依赖"
+    - name: "Redis"
+      purpose_for_domain: "engine 运行时锁与队列依赖"
+domain_security_considerations:
+  sensitive_areas:
+    - area: "JWT_SECRET / DB_DSN / REDIS_PASSWORD"
+      location: "docker-compose.yml + cmd/*/main.go"
+      concern: "缺失会导致启动失败；需避免明文泄露"
+  authentication_patterns_in_domain: "backend 通过 JWT_SECRET 初始化认证配置"
+  authorization_patterns_in_domain: "不在本次 build/start 核验范围"
+  data_validation_in_domain: "环境变量在启动时做强校验"
+testing_patterns:
+  framework: "N/A (research only)"
+  coverage_areas: ["构建命令", "启动入口", "健康检查字符串"]
+  test_organization: "未发现专项自动化验证流水"
+  mock_patterns: []
+execution_order:
+  local_sequence_by_dependency:
+    - "初始化外部依赖: SQL Server + Redis"
+    - "启动 backend: config-management/backend/cmd/api"
+    - "启动 frontend: config-management/frontend (dev)"
+    - "独立运行链路: engine -> worker"
+  compose_sequence_by_dependency:
+    - "sqlserver/redis (healthcheck 通过)"
+    - "backend (depends_on service_healthy)"
+    - "frontend (depends_on backend healthy)"
+open_questions:
+  - question: "项目是否存在 docs/PRD.yaml 作为本计划基线？"
+    context: "mode 指定知识源包含 docs/PRD.yaml，但仓库未检索到该文件"
+    type: decision_blocker
+    affects: ["范围对齐", "验收标准可追溯性"]
+  - question: "backend/engine 是否应提供 HTTP /api/v1/health 端点以匹配 compose 与 Dockerfile？"
+    context: "当前 healthcheck 命令指向该路径，但代码路由未检索到"
+    type: research
+    affects: ["容器健康判定", "启动稳定性"]
+gaps:
+  - area: "PRD 基线缺失"
+    description: "docs/PRD.yaml 不存在，无法按 PRD 精准判定 in_scope/out_of_scope"
+    impact: decision_blocker
+    affects: ["研究范围一致性"]
+  - area: "健康检查实现-配置一致性"
+    description: "compose 与 Dockerfile 使用 /api/v1/health，但 backend 与 runtime HTTP 路由未发现对应 endpoint"
+    impact: research_blocker
+    affects: ["docker compose 启动成功率", "容器自愈判定"]
+  - area: "构建脚本可维护性"
+    description: "build-frontend.sh 文件内容混入批处理与 shell 片段，跨平台行为存在不确定性"
+    impact: nice_to_know
+    affects: ["一键构建可靠性"]

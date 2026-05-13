@@ -24,8 +24,8 @@ import (
 )
 
 func main() {
-	dsn := envOrFatal("DB_DSN")
-	jwtSecret := envOrFatal("JWT_SECRET")
+	dsn := envOr("DB_DSN", "")
+	jwtSecret := envOr("JWT_SECRET", "")
 	httpAddr := envOr("HTTP_ADDR", ":7080")
 
 	// 初始化系统管理数据库连接

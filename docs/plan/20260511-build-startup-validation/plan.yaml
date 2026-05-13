@@ -1,0 +1,546 @@
+plan_id: "20260511-build-startup-validation"
+objective: "编译并保证 frontend/backend/engine/worker 可按最小口径启动"
+created_at: "2026-05-11T16:10:00+08:00"
+created_by: "gem-planner"
+status: "pending"
+research_confidence: "high"
+plan_metrics:
+  wave_1_task_count: 1
+  total_dependencies: 4
+  risk_score: "medium"
+tldr: |
+  该计划按 DAG 拆分为 5 个波次：依赖就绪 -> 编译验证 -> 启动验证 -> 阻断修复 -> 回归验收。
+  目标是让 frontend/backend/engine/worker 在本地开发环境达到可重复的 L1(编译通过)+L2(启动通过)标准。
+  启动验收命令以 PowerShell 为主口径，附 bash/cmd 等价写法；健康检查路径统一采用 /api/v1/health（计划与编排口径先统一，非必要不改代码）。
+  每个任务都定义通过标准与失败回退策略，确保执行过程可控、可追溯。
+  本轮唯一验收基线已正式锁定为两份 research 文件，冲突按既定优先级规则裁决并留痕。
+baseline_decision:
+  status: "resolved"
+  decided_at: "2026-05-11T17:35:00+08:00"
+  decision: "本轮唯一验收基线文件锁定为 research_findings_build-startup-validation.yaml 与 research_findings_backend_engine_worker_startup.yaml。"
+  baseline_files:
+    - "docs/plan/20260511-build-startup-validation/research_findings_build-startup-validation.yaml"
+    - "docs/plan/20260511-build-startup-validation/research_findings_backend_engine_worker_startup.yaml"
+  rationale: "docs/PRD.yaml 当前缺失，且两份 research 文件已覆盖构建与 backend/engine/worker 启动关键约束，可作为本轮唯一可审计验收基线。"
+conflict_priority_rules:
+  status: "active"
+  decided_at: "2026-05-11T17:35:00+08:00"
+  order:
+    - priority: 1
+      rule: "若规则冲突，正式基线文件结论优先于 plan 内历史描述与临时说明。"
+    - priority: 2
+      rule: "两份正式基线文件互有冲突时，以更严格的验收门槛为准。"
+    - priority: 3
+      rule: "若严格门槛仍无法判定，优先采用可复现、可量化且可留痕的证据口径（命令退出码/端口监听/健康探针/日志）。"
+    - priority: 4
+      rule: "冲突裁决结果必须写入验收记录并标记时间戳，未留痕视为未决。"
+open_questions:
+  - question: "docs/PRD.yaml 缺失时，是否以当前 research 文件作为验收唯一基线？"
+    context: "规划模式知识源要求包含 PRD，但仓库当前未发现 docs/PRD.yaml。"
+    type: "decision_blocker"
+    affects: ["t5-regression-acceptance"]
+    status: "resolved"
+    resolved_at: "2026-05-11T17:35:00+08:00"
+    resolution: "已决策：本轮唯一验收基线为 docs/plan/20260511-build-startup-validation/research_findings_build-startup-validation.yaml 与 docs/plan/20260511-build-startup-validation/research_findings_backend_engine_worker_startup.yaml。"
+gaps:
+  - description: "PRD 基线缺失，验收追溯存在不确定性。"
+    status: "resolved"
+    resolved_at: "2026-05-11T17:35:00+08:00"
+    resolution: "通过 formal baseline decision 固化两份 research 文件为唯一验收基线，并要求冲突裁决留痕。"
+    refinement_requests:
+      - query: "确认以 research_findings_build-startup-validation.yaml 与 research_findings_backend_engine_worker_startup.yaml 作为验收基线"
+        source_hint: "docs/plan/20260511-build-startup-validation/"
+  - description: "健康检查实现与编排探针可能不一致，需按计划口径先统一。"
+    status: "resolved"
+    resolved_at: "2026-05-11T17:35:00+08:00"
+    resolution: "已在计划层固定统一口径为 /api/v1/health，并纳入冲突优先级与验收留痕规则。"
+    refinement_requests:
+      - query: "统一验收与编排探针到 /api/v1/health；仅在无法通过 L2 时再最小改代码"
+        source_hint: "docs/plan/20260511-build-startup-validation/plan.yaml + docker-compose.yml"
+pre_mortem:
+  overall_risk_level: "medium"
+  critical_failure_modes:
+    - scenario: "SQL Server 或 Redis 未就绪导致 backend/engine 启动失败"
+      likelihood: "medium"
+      impact: "critical"
+      mitigation: "wave1 完成依赖探测与连通性门禁；失败时切换外部依赖并更新连接变量。"
+    - scenario: "健康检查路径不一致导致 compose 误判不健康，阻断联动启动"
+      likelihood: "medium"
+      impact: "high"
+      mitigation: "wave3/wave5 统一使用 /api/v1/health + 端口 + 日志三要素判定；wave4 优先修订计划与编排口径，非必要不改代码。"
+    - scenario: "Dockerfile 入口与仓库结构不一致导致容器链路失败"
+      likelihood: "high"
+      impact: "high"
+      mitigation: "优先以本地源码入口(go run/go build)完成验收，再在 wave4 修复镜像入口。"
+  assumptions:
+    - "本轮聚焦开发环境验证，不涉及生产部署变更。"
+    - "允许以命令与日志证据作为验收材料，不强制新增自动化测试框架。"
+    - "frontend 最小启动口径为 Vite dev 服务可持续运行并可访问。"
+implementation_specification:
+  code_structure: "依赖层(数据库/缓存) -> 构建层(frontend/backend/engine/worker) -> 运行层(四进程启动) -> 修复层(阻断问题) -> 验收层(双轮回归)。"
+  affected_areas:
+    - "docker-compose.yml"
+    - "Makefile"
+    - "Dockerfile"
+    - "config-management/frontend/package.json"
+    - "config-management/backend/cmd/api/main.go"
+    - "runtime-execution/cmd/engine/main.go"
+    - "runtime-execution/cmd/worker/main.go"
+    - "docs/plan/20260511-build-startup-validation/"
+  component_details:
+    - component: "frontend"
+      responsibility: "提供管理端页面开发服务"
+      interfaces: ["HTTP :5173"]
+      dependencies:
+        - component: "config-management backend"
+          relationship: "API 调用依赖"
+      integration_points:
+        - "启动命令: cd config-management/frontend && pnpm install && pnpm dev --host 0.0.0.0 --port 5173"
+        - "通过标准: 5173 端口监听成功，进程 60 秒内不退出"
+    - component: "config-management backend"
+      responsibility: "提供配置管理 API"
+      interfaces: ["HTTP :8080"]
+      dependencies:
+        - component: "SQL Server"
+          relationship: "DB_DSN 必需"
+        - component: "JWT_SECRET"
+          relationship: "启动必需配置"
+        - component: "HTTP_ADDR"
+          relationship: "必填且固定为 :8080"
+      integration_points:
+        - "PowerShell: Set-Location config-management/backend; $env:DB_DSN='...'; $env:JWT_SECRET='...'; $env:HTTP_ADDR=':8080'; go run ./cmd/api"
+        - "bash 等价: cd config-management/backend && DB_DSN='...' JWT_SECRET='...' HTTP_ADDR=':8080' go run ./cmd/api"
+        - "cmd 等价: cd config-management/backend && set DB_DSN=... && set JWT_SECRET=... && set HTTP_ADDR=:8080 && go run ./cmd/api"
+        - "通过标准: 8080 端口监听成功，日志无 fatal/panic"
+    - component: "runtime engine"
+      responsibility: "工作流调度与节点编排"
+      interfaces: ["gRPC :50051", "HTTP :8081"]
+      dependencies:
+        - component: "SQL Server"
+          relationship: "DB_DSN 必需且可达"
+        - component: "Redis"
+          relationship: "REDIS_ADDR 必需且可达"
+      integration_points:
+        - "PowerShell: Set-Location runtime-execution; $env:DB_DSN='...'; $env:REDIS_ADDR='localhost:6379'; $env:GRPC_ADDR=':50051'; $env:HTTP_ADDR=':8081'; go run ./cmd/engine"
+        - "bash 等价: cd runtime-execution && DB_DSN='...' REDIS_ADDR='localhost:6379' GRPC_ADDR=':50051' HTTP_ADDR=':8081' go run ./cmd/engine"
+        - "cmd 等价: cd runtime-execution && set DB_DSN=... && set REDIS_ADDR=localhost:6379 && set GRPC_ADDR=:50051 && set HTTP_ADDR=:8081 && go run ./cmd/engine"
+        - "通过标准: 50051/8081 监听成功，进程 60 秒内不退出"
+    - component: "runtime worker"
+      responsibility: "执行节点任务与心跳上报"
+      interfaces: ["gRPC :50052(默认)"]
+      dependencies:
+        - component: "runtime engine"
+          relationship: "ENGINE_ADDR 必需且可达"
+      integration_points:
+        - "PowerShell: Set-Location runtime-execution; $env:ENGINE_ADDR='localhost:50051'; $env:GRPC_ADDR=':50052'; go run ./cmd/worker"
+        - "bash 等价: cd runtime-execution && ENGINE_ADDR='localhost:50051' GRPC_ADDR=':50052' go run ./cmd/worker"
+        - "cmd 等价: cd runtime-execution && set ENGINE_ADDR=localhost:50051 && set GRPC_ADDR=:50052 && go run ./cmd/worker"
+        - "通过标准: 进程持续运行，注册/心跳日志无致命错误"
+    - component: "healthcheck policy"
+      responsibility: "统一启动验收与编排探针判定口径"
+      interfaces: ["HTTP GET /api/v1/health"]
+      dependencies:
+        - component: "docker-compose"
+          relationship: "探针路径应与计划一致"
+      integration_points:
+        - "统一策略: backend/engine 健康检查主路径固定为 /api/v1/health"
+        - "执行原则: 优先修改计划与编排口径，不改业务代码；仅当 L2 无法达标时再做最小代码修复"
+contracts:
+  - from_task: "t1-dependency-gate"
+    to_task: "t2-compile-all"
+    interface: "依赖状态与环境变量矩阵"
+    format: "markdown"
+  - from_task: "t2-compile-all"
+    to_task: "t3-startup-verification"
+    interface: "四组件编译结果与入口命令清单"
+    format: "markdown"
+  - from_task: "t3-startup-verification"
+    to_task: "t4-fix-blockers"
+    interface: "启动失败证据包(命令、日志、复现步骤)"
+    format: "markdown"
+  - from_task: "t4-fix-blockers"
+    to_task: "t5-regression-acceptance"
+    interface: "修复摘要、风险点与回退记录"
+    format: "markdown"
+tasks:
+  - id: "t1-dependency-gate"
+    title: "依赖就绪门禁与变量基线"
+    description: |
+      目标：在编译/启动前固定可用依赖与变量，避免无效失败。
+
+      执行步骤（PowerShell 主口径，可直接执行）：
+      1) docker compose up -d sqlserver redis
+      2) docker compose ps
+      3) docker compose logs --tail=120 sqlserver redis
+      4) 依赖联通性检查（PowerShell）：
+        Test-NetConnection -ComputerName localhost -Port 1433
+        Test-NetConnection -ComputerName localhost -Port 6379
+      5) 输出最小变量矩阵（t1 门禁必含）：
+        - backend: DB_DSN, JWT_SECRET, HTTP_ADDR(必填=:8080)
+        - engine: DB_DSN, REDIS_ADDR, GRPC_ADDR(建议=:50051), HTTP_ADDR(建议=:8081)
+         - worker: ENGINE_ADDR, WORKER_ID(可选), WORKER_IP(可选), GRPC_ADDR(可选)
+        - 全局敏感变量门禁: MSSQL_SA_PASSWORD, REDIS_PASSWORD, JWT_SECRET, DB_DSN
+         - frontend: Node + pnpm 可执行
+
+      等价命令：
+      - bash: docker compose up -d sqlserver redis; docker compose ps; docker compose logs --tail=120 sqlserver redis; nc -z 127.0.0.1 1433; nc -z 127.0.0.1 6379
+      - cmd: docker compose up -d sqlserver redis && docker compose ps && docker compose logs --tail=120 sqlserver redis && powershell -Command "Test-NetConnection localhost -Port 1433" && powershell -Command "Test-NetConnection localhost -Port 6379"
+
+      通过标准：
+      - sqlserver/redis 为 running 或 healthy；
+      - 四组件必填变量完整，无缺失项，且 MSSQL_SA_PASSWORD/REDIS_PASSWORD/JWT_SECRET/DB_DSN 已设置；
+      - 依赖与变量清单可被后续 wave 直接复用。
+
+      回退策略：
+      - compose 拉起失败时，切换外部 SQL Server/Redis，并同步更新连接串；
+      - 健康检查误判时，改用端口监听+主动连接测试作为临时门禁。
+    wave: 1
+    agent: "gem-devops"
+    prototype: false
+    covers: ["dependency", "env", "gate"]
+    priority: "high"
+    status: "pending"
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "docker-compose.yml"
+        description: "依赖服务定义与健康检查"
+      - path: "docs/plan/20260511-build-startup-validation/research_findings_backend_engine_worker_startup.yaml"
+        description: "启动依赖研究结论"
+    diagnosis:
+      root_cause: "外部依赖未就绪与环境变量缺失是最常见启动阻断。"
+      fix_recommendations: "先建立依赖门禁，再执行编译和启动验证。"
+      injected_at: "2026-05-11T16:10:00+08:00"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "降低后续任务噪声和误报"
+        timestamp: "2026-05-11T16:10:00+08:00"
+    estimated_effort: "small"
+    estimated_files: 2
+    estimated_lines: 120
+    focus_area: "dependency-readiness"
+    verification:
+      - "依赖日志和状态证明服务可用"
+      - "变量矩阵覆盖 frontend/backend/engine/worker"
+    acceptance_criteria:
+      - "依赖可被 backend/engine 成功消费"
+      - "后续任务不再因缺变量直接失败"
+    failure_modes:
+      - scenario: "本机容器环境异常导致依赖不可启动"
+        likelihood: "medium"
+        impact: "high"
+        mitigation: "切换外部依赖并记录连接串差异"
+    environment: "development"
+    requires_approval: false
+    devops_security_sensitive: true
+
+  - id: "t2-compile-all"
+    title: "frontend/backend/engine/worker 编译验证"
+    description: |
+      目标：完成四组件 L1 编译通过。
+
+      执行步骤：
+      1) cd config-management/frontend && pnpm install && pnpm build
+      2) cd config-management/backend && go build ./cmd/api
+      3) cd runtime-execution && go build ./cmd/engine
+      4) cd runtime-execution && go build ./cmd/worker
+
+      通过标准：
+      - 四条命令退出码均为 0；
+      - 无新增编译错误；
+      - 形成编译结果摘要（组件、耗时、失败原因）。
+
+      回退策略：
+      - frontend 失败时先重装依赖并重试一次；
+      - Go 编译失败时仅做最小入口/引用修复，避免跨模块扩散；
+      - 如 Dockerfile 入口冲突，临时以源码入口命令作为验收基准。
+    wave: 2
+    agent: "gem-implementer"
+    prototype: false
+    covers: ["compile", "frontend", "backend", "engine", "worker"]
+    priority: "high"
+    status: "pending"
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: ["t1-dependency-gate"]
+    conflicts_with: []
+    context_files:
+      - path: "config-management/frontend/package.json"
+        description: "前端构建脚本定义"
+      - path: "Makefile"
+        description: "后端构建参考入口"
+      - path: "docs/plan/20260511-build-startup-validation/research_findings_build-startup-validation.yaml"
+        description: "构建风险与入口研究"
+    diagnosis:
+      root_cause: "依赖漂移和入口路径不一致会造成编译阻断。"
+      fix_recommendations: "按组件分治收敛错误，避免一次性大改。"
+      injected_at: "2026-05-11T16:10:00+08:00"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "L1 编译通过是 L2 启动验证前置"
+        timestamp: "2026-05-11T16:10:00+08:00"
+    estimated_effort: "medium"
+    estimated_files: 3
+    estimated_lines: 220
+    focus_area: "compile-validation"
+    verification:
+      - "四组件编译命令全部成功"
+      - "失败分类与修复路径明确"
+    acceptance_criteria:
+      - "达到 L1: frontend/backend/engine/worker 全量编译通过"
+      - "四组件入口可执行"
+    failure_modes:
+      - scenario: "前端锁文件或类型问题导致构建失败"
+        likelihood: "medium"
+        impact: "medium"
+        mitigation: "依赖重装后最小 TS 修复并复编译"
+      - scenario: "Go 入口路径或依赖引用不一致导致构建失败"
+        likelihood: "medium"
+        impact: "high"
+        mitigation: "只修复入口与引用链，不改业务语义"
+    tech_stack: ["Go", "TypeScript", "pnpm"]
+    test_coverage: "编译验证（非单元测试）"
+
+  - id: "t3-startup-verification"
+    title: "四组件最小启动验证"
+    description: |
+      目标：完成四组件 L2 启动通过（可持续运行）。
+
+      执行步骤（PowerShell 主口径，可直接执行）：
+      1) 端口预检（防冲突）：
+        $ports = 5173,8080,8081,50051,50052
+        foreach ($p in $ports) { if (Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue) { throw "端口占用: $p" } }
+      2) frontend（新终端）：
+        Set-Location config-management/frontend; pnpm dev --host 0.0.0.0 --port 5173
+      3) backend（新终端，HTTP_ADDR 必填且固定）：
+        Set-Location config-management/backend; $env:DB_DSN='...'; $env:JWT_SECRET='...'; $env:HTTP_ADDR=':8080'; go run ./cmd/api
+      4) engine（新终端）：
+        Set-Location runtime-execution; $env:DB_DSN='...'; $env:REDIS_ADDR='localhost:6379'; $env:GRPC_ADDR=':50051'; $env:HTTP_ADDR=':8081'; go run ./cmd/engine
+      5) worker（新终端）：
+        Set-Location runtime-execution; $env:ENGINE_ADDR='localhost:50051'; $env:GRPC_ADDR=':50052'; go run ./cmd/worker
+      6) 健康检查与监听检查（主路径统一 /api/v1/health）：
+        Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8080/api/v1/health
+        Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8081/api/v1/health
+        Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -in 5173,8080,8081,50051,50052 } | Select-Object LocalAddress,LocalPort,OwningProcess | Format-Table -AutoSize
+      7) 60 秒稳定性判定（执行于第 0 秒与第 60 秒）：
+        $pidSnapshot1 = Get-Process -Name node,api,engine,worker -ErrorAction SilentlyContinue | Select-Object Name,Id,StartTime
+        Start-Sleep -Seconds 60
+        $pidSnapshot2 = Get-Process -Name node,api,engine,worker -ErrorAction SilentlyContinue | Select-Object Name,Id,StartTime
+        Compare-Object $pidSnapshot1 $pidSnapshot2 -Property Name,Id,StartTime
+      8) 日志判定（最近 200 行不得包含 fatal/panic）：
+        docker compose logs --tail=200 backend engine worker | Select-String -Pattern "fatal|panic" -CaseSensitive:$false
+
+      等价命令：
+      - bash: ss -ltn '( sport = :5173 or sport = :8080 or sport = :8081 or sport = :50051 or sport = :50052 )'; curl -fsS http://127.0.0.1:8080/api/v1/health; curl -fsS http://127.0.0.1:8081/api/v1/health
+      - cmd: netstat -ano | findstr ":5173 :8080 :8081 :50051 :50052" && curl http://127.0.0.1:8080/api/v1/health && curl http://127.0.0.1:8081/api/v1/health
+
+      通过标准：
+      - 四个进程启动后 60 秒内不退出；
+      - 目标端口全部监听成功；
+      - backend/engine 的 /api/v1/health 返回成功；
+      - 日志无 fatal/panic。
+
+      回退策略：
+      - backend/engine 因依赖不可达失败时，回到 wave1 复核依赖；
+      - worker 注册失败时，先核对 ENGINE_ADDR 与 gRPC 端口连通；
+      - health 路径不一致时，优先修订计划和编排探针到 /api/v1/health；仅在必要时进入 wave4 最小改码。
+    wave: 3
+    agent: "gem-devops"
+    prototype: false
+    covers: ["startup", "l2", "availability"]
+    priority: "high"
+    status: "pending"
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: ["t2-compile-all"]
+    conflicts_with: []
+    context_files:
+      - path: "config-management/backend/cmd/api/main.go"
+        description: "backend 启动参数与入口"
+      - path: "runtime-execution/cmd/engine/main.go"
+        description: "engine 启动参数与入口"
+      - path: "runtime-execution/cmd/worker/main.go"
+        description: "worker 启动参数与入口"
+    diagnosis:
+      root_cause: "依赖可达性、变量缺失、端口冲突和探针不一致是主要启动风险。"
+      fix_recommendations: "逐组件隔离验证并沉淀失败证据供 wave4 收敛。"
+      injected_at: "2026-05-11T16:10:00+08:00"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "建立统一最小启动口径"
+        timestamp: "2026-05-11T16:10:00+08:00"
+    estimated_effort: "medium"
+    estimated_files: 2
+    estimated_lines: 190
+    focus_area: "startup-check"
+    verification:
+      - "端口预检与监听证据完整"
+      - "四进程 60 秒稳定运行（PID 快照对比无异常）"
+      - "健康检查(/api/v1/health)与日志无致命错误"
+    acceptance_criteria:
+      - "达到 L2: frontend/backend/engine/worker 可启动"
+      - "启动步骤可复现"
+    failure_modes:
+      - scenario: "端口冲突导致进程启动后立即退出"
+        likelihood: "medium"
+        impact: "medium"
+        mitigation: "改用备用端口并同步更新依赖地址"
+      - scenario: "健康检查配置与实现不一致导致误判失败"
+        likelihood: "high"
+        impact: "high"
+        mitigation: "临时采用端口+日志判定并在 wave4 对齐"
+    environment: "development"
+    requires_approval: false
+    devops_security_sensitive: true
+
+  - id: "t4-fix-blockers"
+    title: "阻断问题修复与启动链路加固"
+    description: |
+      目标：关闭 wave2-wave3 阶段暴露的阻断项，形成稳定启动链路。
+
+      执行步骤：
+      1) 按失败证据进行最小修复（入口、配置、健康检查对齐）
+      2) 修复后局部重编译：
+         - cd config-management/backend && go build ./cmd/api
+         - cd runtime-execution && go build ./cmd/engine && go build ./cmd/worker
+         - cd config-management/frontend && pnpm build
+      3) 修复后重启验证：复用 wave3 命令
+      4) 如涉及编排：docker compose up -d --build backend frontend
+
+      通过标准：
+      - 阻断问题全部关闭或有可执行临时规避；
+      - 无新增编译/启动阻断；
+      - 健康检查口径统一为 /api/v1/health（优先计划与编排层一致），或有明确过渡方案。
+
+      回退策略：
+      - 修复引入新阻断时，回退到最近可启动提交并保留补丁记录；
+      - 健康检查短期无法统一时，回退为文档化临时判定规则（端口+日志+探针）并标记后续治理。
+    wave: 4
+    agent: "gem-implementer"
+    prototype: false
+    covers: ["fix", "hardening", "healthcheck"]
+    priority: "medium"
+    status: "pending"
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: ["t3-startup-verification"]
+    conflicts_with: []
+    context_files:
+      - path: "docker-compose.yml"
+        description: "服务编排与探针配置"
+      - path: "Dockerfile"
+        description: "容器入口与健康检查定义"
+      - path: "docs/plan/20260511-build-startup-validation/research_findings_build-startup-validation.yaml"
+        description: "已识别阻断项清单"
+    diagnosis:
+      root_cause: "入口与配置口径不一致导致启动链路脆弱。"
+      fix_recommendations: "最小改动优先修复入口和探针一致性，再做回归。"
+      injected_at: "2026-05-11T16:10:00+08:00"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "将修复与验证解耦，便于回退控制"
+        timestamp: "2026-05-11T16:10:00+08:00"
+    estimated_effort: "medium"
+    estimated_files: 3
+    estimated_lines: 260
+    focus_area: "blocker-remediation"
+    verification:
+      - "阻断项闭环清单完整"
+      - "修复后可重复通过编译与启动"
+    acceptance_criteria:
+      - "关键阻断项关闭"
+      - "最小启动口径不退化"
+    failure_modes:
+      - scenario: "修复扩散跨模块，造成新回归"
+        likelihood: "medium"
+        impact: "high"
+        mitigation: "限制改动在入口/配置层并立即局部复验"
+    tech_stack: ["Go", "TypeScript", "Docker Compose"]
+    test_coverage: "编译+启动回归"
+
+  - id: "t5-regression-acceptance"
+    title: "双轮回归验收与交付归档"
+    description: |
+      目标：完成最终 L1+L2 双轮回归，形成可交付证据。
+
+      执行步骤（PowerShell 主口径，可直接执行）：
+      1) 重新执行 wave2 四组件编译命令
+      2) 重新执行 wave3 四组件启动命令、端口预检与 /api/v1/health 探针核验
+      3) 可选执行 compose 联动回归：
+         docker compose up -d --build && docker compose ps
+      4) 执行 60 秒稳定性判定与日志判定：
+        $start=Get-Date; Start-Sleep -Seconds 60; $end=Get-Date
+        Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -in 5173,8080,8081,50051,50052 }
+        docker compose logs --since ($start.ToString('o')) --until ($end.ToString('o')) backend engine worker | Select-String -Pattern "fatal|panic" -CaseSensitive:$false
+      5) 产出验收记录（证据模板）：
+        - 环境信息：日期、分支、提交、操作者
+        - 命令证据：完整 PowerShell 命令与退出码
+        - 端口证据：5173/8080/8081/50051/50052 监听截图或文本
+        - 探针证据：/api/v1/health 响应摘要（backend/engine）
+        - 稳定性证据：60 秒前后 PID/进程状态对比
+        - 日志证据：60 秒窗口日志检索结果（fatal/panic=0）
+        - 异常与回退：问题、处置、最终结论
+
+      通过标准：
+      - 两轮结果一致，且无新增阻断；
+      - frontend/backend/engine/worker 同时满足 L1+L2；
+      - 形成可复用的启动执行说明。
+
+      回退策略：
+      - 回归失败时按失败类型回退到 t4 再修复；
+      - 若仅环境抖动导致失败，允许受控重试一次，仍失败则标记 blocked。
+    wave: 5
+    agent: "gem-reviewer"
+    prototype: false
+    covers: ["regression", "acceptance", "delivery"]
+    priority: "medium"
+    status: "pending"
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: ["t4-fix-blockers"]
+    conflicts_with: []
+    context_files:
+      - path: "docs/plan/20260511-build-startup-validation/plan-scope.md"
+        description: "L1-L4 验收范围定义"
+      - path: "docs/plan/20260511-build-startup-validation/research_findings_build-startup-validation.yaml"
+        description: "构建与启动风险基线"
+    diagnosis:
+      root_cause: "修复后未做双轮验证容易遗漏隐式依赖问题。"
+      fix_recommendations: "双轮回归 + 证据归档，保证结论稳定。"
+      injected_at: "2026-05-11T16:10:00+08:00"
+    planning_pass: 1
+    planning_history:
+      - pass: 1
+        reason: "将最终验收独立成波次，提升可信度"
+        timestamp: "2026-05-11T16:10:00+08:00"
+    estimated_effort: "small"
+    estimated_files: 2
+    estimated_lines: 150
+    focus_area: "acceptance"
+    verification:
+      - "双轮编译与启动结果一致"
+      - "验收归档包含 60 秒稳定性与日志判定证据"
+      - "验收归档包含回退记录"
+    acceptance_criteria:
+      - "frontend/backend/engine/worker 编译并可启动"
+      - "通过标准与回退策略均可执行"
+      - "按已决策基线执行并留痕（含冲突裁决依据与时间戳）"
+    failure_modes:
+      - scenario: "环境抖动导致偶发失败被误判为代码回归"
+        likelihood: "medium"
+        impact: "medium"
+        mitigation: "一次受控重试并记录环境证据后再定性"
+    requires_review: true
+    review_depth: "standard"
+    review_security_sensitive: false
