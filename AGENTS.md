@@ -17,7 +17,8 @@
 - 包名使用**小写、简短、有意义**的单词
 - 错误必须显式处理，**禁止忽略 error**
 - 结构体必须写 JSON 标签
-- 接口统一返回标准格式：code / message / data
+- 所有接口返回统一格式：code / sub_code / message / data。在data为空时候可以不输出data字段，在错误的的时候必须输出sub_code字段，成功时候不输出sub_code字段. 当code为0时代表接口处理成功。 如：`{"code": 0, " message": "成功", "data": {"id": 1}}` , `{"code":403001,"sub_code":"usr.auth.invalid","message": "用户认证信息无效"}` 
+- 所有的code和sub_code都必须在constants/respcode和constants/subcode中进行常量定义。
 
 ### 3.2 代码风格
 - 函数名：驼峰，首字母大写表示公开，小写表示私有
@@ -67,7 +68,6 @@ pnpm lint
 - 后端统一接口要求
   - 所有查询类的请求都使用GET方法
   - 所有创建/修改/删除类的接口都使用POST方法
-  - 所有接口返回统一格式：code / sub_code / message / data。在data为空时候可以不输出data字段，在错误的的时候必须输出sub_code字段，成功时候不输出sub_code字段. 相应code为0时代表接口处理成功。 如：`{"code": 0, " message": "成功", "data": {"id": 1}}` , `{"code":403001,"sub_code":"usr.auth.invalid","message": "用户认证信息无效"}` 
   - 错误信息
 - 状态码：
   - 200 成功
