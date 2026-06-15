@@ -14,8 +14,12 @@ import (
 )
 
 type capturingFormService struct {
-	created *types.FormDefinition
-	updated *types.FormDefinition
+	created          *types.FormDefinition
+	updated          *types.FormDefinition
+	publishOperator  string
+	rollbackOperator string
+	listCount        int64
+	listItems        []*types.FormDefinition
 }
 
 var _ api.FormService = (*capturingFormService)(nil)
@@ -35,11 +39,21 @@ func (s *capturingFormService) UpdateForm(_ context.Context, def *types.FormDefi
 }
 
 func (s *capturingFormService) ListForms(context.Context, types.FormListParams) ([]*types.FormDefinition, int64, error) {
+	if s.listItems != nil || s.listCount != 0 {
+		return s.listItems, s.listCount, nil
+	}
 	return []*types.FormDefinition{}, 0, nil
 }
 
-func (s *capturingFormService) PublishForm(context.Context, string, string, string) error { return nil }
-func (s *capturingFormService) RollbackForm(context.Context, string, int, string) error   { return nil }
+func (s *capturingFormService) PublishForm(_ context.Context, _ string, _ string, operatorID string) error {
+	s.publishOperator = operatorID
+	return nil
+}
+
+func (s *capturingFormService) RollbackForm(_ context.Context, _ string, _ int, operatorID string) error {
+	s.rollbackOperator = operatorID
+	return nil
+}
 func (s *capturingFormService) GetFormVersions(context.Context, string) ([]*types.FormVersionHistory, error) {
 	return []*types.FormVersionHistory{}, nil
 }

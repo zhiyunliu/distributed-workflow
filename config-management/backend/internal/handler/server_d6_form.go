@@ -2,9 +2,11 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	api "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/api"
+	"github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/jwtutil"
 	types "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/types"
 )
 
@@ -39,23 +41,23 @@ func (s *Server) registerD6FormRoutes(r *gin.Engine) {
 
 func (s *Server) createForm(c *gin.Context) {
 	if s.formSvc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"code": 503, "message": "表单服务不可用"})
+		s.respondError(c, http.StatusServiceUnavailable, 503, "表单服务不可用")
 		return
 	}
 	var req types.FormDefinition
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		s.respondError(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	if err := req.NormalizeSchema(req.Schema, req.FormSchema); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		s.respondError(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	if err := s.formSvc.CreateForm(c.Request.Context(), &req); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"code": 200, "message": "创建成功", "data": req})
+	s.respondJSON(c, http.StatusCreated, 200, "创建成功", req, nil)
 }
 
 type listFormsQuery struct {
@@ -66,12 +68,12 @@ type listFormsQuery struct {
 
 func (s *Server) listForms(c *gin.Context) {
 	if s.formSvc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"code": 503, "message": "表单服务不可用"})
+		s.respondError(c, http.StatusServiceUnavailable, 503, "表单服务不可用")
 		return
 	}
 	var q listFormsQuery
 	if err := c.ShouldBindQuery(&q); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		s.respondError(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	if q.Page <= 0 {
@@ -87,152 +89,197 @@ func (s *Server) listForms(c *gin.Context) {
 	}
 	list, total, err := s.formSvc.ListForms(c.Request.Context(), params)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "data": list, "total": total})
+	s.respondJSON(c, http.StatusOK, 200, "", gin.H{"list": list, "total": total}, nil)
 }
 
 func (s *Server) getForm(c *gin.Context) {
 	if s.formSvc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"code": 503, "message": "表单服务不可用"})
+		s.respondError(c, http.StatusServiceUnavailable, 503, "表单服务不可用")
 		return
 	}
 	formID := c.Param("formId")
 	form, err := s.formSvc.GetForm(c.Request.Context(), formID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": err.Error()})
+		s.respondError(c, http.StatusNotFound, 404, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "data": form})
+	s.respondJSON(c, http.StatusOK, 200, "", form, nil)
 }
 
 func (s *Server) updateForm(c *gin.Context) {
 	if s.formSvc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"code": 503, "message": "表单服务不可用"})
+		s.respondError(c, http.StatusServiceUnavailable, 503, "表单服务不可用")
 		return
 	}
 	var req types.FormDefinition
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		s.respondError(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	if err := req.NormalizeSchema(req.Schema, req.FormSchema); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		s.respondError(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	req.FormID = c.Param("formId")
 	if err := s.formSvc.UpdateForm(c.Request.Context(), &req); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "更新成功"})
+	s.respondJSON(c, http.StatusOK, 200, "更新成功", nil, nil)
 }
 
 type publishFormReq struct {
 	ChangeLog  string `json:"changeLog"`
-	OperatorID string `json:"operatorId" binding:"required"`
+	OperatorID string `json:"operatorId"`
+}
+
+func resolveD6OperatorID(c *gin.Context, jwtSecret string) string {
+	if username, ok := c.Get("username"); ok {
+		if operator, ok := username.(string); ok && operator != "" {
+			return operator
+		}
+	}
+	if userID, ok := c.Get("userID"); ok {
+		switch v := userID.(type) {
+		case int64:
+			if v != 0 {
+				return strconv.FormatInt(v, 10)
+			}
+		case int:
+			if v != 0 {
+				return strconv.Itoa(v)
+			}
+		case string:
+			if v != "" {
+				return v
+			}
+		}
+	}
+	if token := extractBearerToken(c); token != "" {
+		if claims, err := jwtutil.Parse(token, jwtSecret); err == nil {
+			if claims.Username != "" {
+				return claims.Username
+			}
+			if claims.UserID != 0 {
+				return strconv.FormatInt(claims.UserID, 10)
+			}
+		}
+	}
+	return ""
 }
 
 func (s *Server) publishForm(c *gin.Context) {
 	if s.formSvc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"code": 503, "message": "表单服务不可用"})
+		s.respondError(c, http.StatusServiceUnavailable, 503, "表单服务不可用")
 		return
 	}
 	var req publishFormReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		s.respondError(c, http.StatusBadRequest, 400, err.Error())
+		return
+	}
+	operatorID := resolveD6OperatorID(c, s.jwtSecret)
+	if operatorID == "" {
+		s.respondError(c, http.StatusUnauthorized, 401, "未登录或 token 已失效")
 		return
 	}
 	formID := c.Param("formId")
-	if err := s.formSvc.PublishForm(c.Request.Context(), formID, req.ChangeLog, req.OperatorID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": err.Error()})
+	if err := s.formSvc.PublishForm(c.Request.Context(), formID, req.ChangeLog, operatorID); err != nil {
+		s.respondError(c, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "发布成功"})
+	s.respondJSON(c, http.StatusOK, 200, "发布成功", nil, nil)
 }
 
 type rollbackFormReq struct {
 	TargetVersion int    `json:"targetVersion" binding:"required,min=1"`
-	OperatorID    string `json:"operatorId"    binding:"required"`
+	OperatorID    string `json:"operatorId"`
 }
 
 func (s *Server) rollbackForm(c *gin.Context) {
 	if s.formSvc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"code": 503, "message": "表单服务不可用"})
+		s.respondError(c, http.StatusServiceUnavailable, 503, "表单服务不可用")
 		return
 	}
 	var req rollbackFormReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		s.respondError(c, http.StatusBadRequest, 400, err.Error())
+		return
+	}
+	operatorID := resolveD6OperatorID(c, s.jwtSecret)
+	if operatorID == "" {
+		s.respondError(c, http.StatusUnauthorized, 401, "未登录或 token 已失效")
 		return
 	}
 	formID := c.Param("formId")
-	if err := s.formSvc.RollbackForm(c.Request.Context(), formID, req.TargetVersion, req.OperatorID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": err.Error()})
+	if err := s.formSvc.RollbackForm(c.Request.Context(), formID, req.TargetVersion, operatorID); err != nil {
+		s.respondError(c, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "版本回滚成功"})
+	s.respondJSON(c, http.StatusOK, 200, "版本回滚成功", nil, nil)
 }
 
 func (s *Server) getFormVersions(c *gin.Context) {
 	if s.formSvc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"code": 503, "message": "表单服务不可用"})
+		s.respondError(c, http.StatusServiceUnavailable, 503, "表单服务不可用")
 		return
 	}
 	formID := c.Param("formId")
 	versions, err := s.formSvc.GetFormVersions(c.Request.Context(), formID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "data": versions})
+	s.respondJSON(c, http.StatusOK, 200, "", versions, nil)
 }
 
 // ─── 表单实例处理函数 ─────────────────────────────────────────────────────────
 
 func (s *Server) saveFormInstance(c *gin.Context) {
 	if s.formSvc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"code": 503, "message": "表单服务不可用"})
+		s.respondError(c, http.StatusServiceUnavailable, 503, "表单服务不可用")
 		return
 	}
 	var req types.FormInstance
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		s.respondError(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	if err := s.formSvc.SaveFormInstance(c.Request.Context(), &req); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "保存成功", "data": req})
+	s.respondJSON(c, http.StatusOK, 200, "保存成功", req, nil)
 }
 
 func (s *Server) getFormInstance(c *gin.Context) {
 	if s.formSvc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"code": 503, "message": "表单服务不可用"})
+		s.respondError(c, http.StatusServiceUnavailable, 503, "表单服务不可用")
 		return
 	}
 	instanceID := c.Param("instanceId")
 	inst, err := s.formSvc.GetFormInstance(c.Request.Context(), instanceID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": err.Error()})
+		s.respondError(c, http.StatusNotFound, 404, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "data": inst})
+	s.respondJSON(c, http.StatusOK, 200, "", inst, nil)
 }
 
 func (s *Server) getFormInstanceByWorkflow(c *gin.Context) {
 	if s.formSvc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"code": 503, "message": "表单服务不可用"})
+		s.respondError(c, http.StatusServiceUnavailable, 503, "表单服务不可用")
 		return
 	}
 	workflowInstanceID := c.Param("workflowInstanceId")
 	nodeID := c.Query("nodeId")
 	inst, err := s.formSvc.GetFormInstanceByWorkflow(c.Request.Context(), workflowInstanceID, nodeID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": err.Error()})
+		s.respondError(c, http.StatusNotFound, 404, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "data": inst})
+	s.respondJSON(c, http.StatusOK, 200, "", inst, nil)
 }

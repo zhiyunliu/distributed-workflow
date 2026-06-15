@@ -1,0 +1,44 @@
+# glue/xdb 示例配置（Wave1 骨架）
+# 说明：该文件当前不强制生效，仅用于后续 glue 启动链路接入参考。
+# 配置优先级建议：环境变量 > 本文件 > 代码默认值。
+
+server:
+  # 环境变量：HTTP_ADDR
+  # 默认值策略：若未设置，则使用 :7080
+  addr: ":7080"
+  # 环境变量：APP_MODE
+  # 默认值策略：legacy（当前生产推荐）
+  mode: "legacy"
+
+jwt:
+  # 环境变量：JWT_SECRET
+  # 默认值策略：无默认值；必须通过环境变量注入
+  secret: ""
+  # 环境变量：JWT_EXPIRE_HOURS
+  # 默认值策略：24
+  expire_hours: 24
+
+xdb:
+  sqlserver:
+    # 环境变量：DB_DSN
+    # 默认值策略：无默认值；必须通过环境变量注入
+    dsn: ""
+    # 环境变量：DB_MAX_OPEN_CONNS
+    # 默认值策略：50
+    max_open_conns: 50
+    # 环境变量：DB_MAX_IDLE_CONNS
+    # 默认值策略：10
+    max_idle_conns: 10
+    # 环境变量：DB_CONN_MAX_LIFETIME_MINUTES
+    # 默认值策略：60
+    conn_max_lifetime_minutes: 60
+
+# 环境变量映射总览：
+# APP_MODE -> server.mode
+# HTTP_ADDR -> server.addr
+# JWT_SECRET -> jwt.secret
+# JWT_EXPIRE_HOURS -> jwt.expire_hours
+# DB_DSN -> xdb.sqlserver.dsn
+# DB_MAX_OPEN_CONNS -> xdb.sqlserver.max_open_conns
+# DB_MAX_IDLE_CONNS -> xdb.sqlserver.max_idle_conns
+# DB_CONN_MAX_LIFETIME_MINUTES -> xdb.sqlserver.conn_max_lifetime_minutes

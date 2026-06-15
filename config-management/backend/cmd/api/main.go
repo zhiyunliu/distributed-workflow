@@ -3,7 +3,7 @@
 // 环境变量：
 //   - DB_DSN     SQL Server 连接字符串（必填）
 //   - JWT_SECRET JWT 签名密钥（必填）
-//   - HTTP_ADDR  HTTP 监听地址（默认 :8080）
+//   - HTTP_ADDR  HTTP 监听地址（默认 :7080）
 package main
 
 import (
@@ -15,8 +15,8 @@ import (
 
 	_ "github.com/microsoft/go-mssqldb"
 
-	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/dao"
 	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/handler"
+	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/repository/xdb"
 	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/service"
 	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/sysmodel"
 	workflowengine "github.com/zhiyunliu/distributed-workflow/runtime-execution/pkg/engine"
@@ -24,9 +24,15 @@ import (
 )
 
 func main() {
-	dsn := envOr("DB_DSN", "")
-	jwtSecret := envOr("JWT_SECRET", "")
+	appMode := normalizeAppMode(envOr("APP_MODE", "legacy"))
+	dsn := envOrFatal("DB_DSN")
+	jwtSecret := envOrFatal("JWT_SECRET")
 	httpAddr := envOr("HTTP_ADDR", ":7080")
+
+	if appMode == "glue" {
+		// Wave1 仅预留 glue 启动入口，当前版本回退到 legacy 以保证行为不变。
+		log.Println("APP_MODE=glue requested, but glue bootstrap is not enabled in Wave1; fallback to legacy mode")
+	}
 
 	// 初始化系统管理数据库连接
 	db, err := sql.Open("sqlserver", dsn)
@@ -38,8 +44,8 @@ func main() {
 		log.Fatalf("ping db: %v", err)
 	}
 
-	// 系统管理 DAO
-	sysDB := dao.NewDB(db)
+	// 系统管理 Repository（xdb 实现）
+	sysDB := xdb.NewDB(db)
 
 	// 初始化系统数据
 	initService := service.NewInitService(sysDB)
@@ -117,4 +123,14 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func normalizeAppMode(mode string) string {
+	switch mode {
+	case "legacy", "glue":
+		return mode
+	default:
+		log.Printf("unknown APP_MODE=%q, fallback to legacy", mode)
+		return "legacy"
+	}
 }

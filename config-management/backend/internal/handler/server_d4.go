@@ -77,12 +77,12 @@ func (s *Server) jwtAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := extractBearerToken(c)
 		if token == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": 401, "message": "未登录或 token 已失效"})
+			s.respondError(c, http.StatusUnauthorized, 401, "未登录或 token 已失效")
 			return
 		}
 		claims, err := jwtutil.Parse(token, s.jwtSecret)
 		if err != nil {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": 401, "message": "token 无效或已过期"})
+			s.respondError(c, http.StatusUnauthorized, 401, "token 无效或已过期")
 			return
 		}
 		c.Set("userID", claims.UserID)
@@ -114,50 +114,46 @@ func currentUserID(c *gin.Context) int64 {
 func (s *Server) login(c *gin.Context) {
 	var req sysmodel.LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误: " + err.Error()})
+		s.respondError(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 	resp, err := s.sysMgr.Auth().Login(c.Request.Context(), &req)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 401, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 401, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "登录成功", "data": resp})
+	s.respondJSON(c, http.StatusOK, 200, "登录成功", resp, nil)
 }
 
 func (s *Server) logout(c *gin.Context) {
 	token := extractBearerToken(c)
 	if err := s.sysMgr.Auth().Logout(c.Request.Context(), token); err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "登出成功"})
+	s.respondJSON(c, http.StatusOK, 200, "登出成功", nil, nil)
 }
 
 func (s *Server) getUserInfo(c *gin.Context) {
 	uid := currentUserID(c)
 	user, err := s.sysMgr.User().GetUserByID(c.Request.Context(), uid)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
 	roles, _ := s.sysMgr.User().GetUserRoles(c.Request.Context(), uid)
 	perms, _ := s.sysMgr.User().GetUserPermissions(c.Request.Context(), uid)
-	c.JSON(http.StatusOK, gin.H{
-		"code": 200, "data": gin.H{
-			"user": user, "roles": roles, "perms": perms,
-		},
-	})
+	s.respondJSON(c, http.StatusOK, 200, "", gin.H{"user": user, "roles": roles, "perms": perms}, nil)
 }
 
 func (s *Server) getUserMenu(c *gin.Context) {
 	uid := currentUserID(c)
 	tree, err := s.sysMgr.Menu().GetUserMenuTree(c.Request.Context(), uid)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "data": tree})
+	s.respondJSON(c, http.StatusOK, 200, "", tree, nil)
 }
 
 func (s *Server) resetPassword(c *gin.Context) {
@@ -166,15 +162,15 @@ func (s *Server) resetPassword(c *gin.Context) {
 		NewPassword string `json:"newPassword" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		s.respondError(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	uid := currentUserID(c)
 	if err := s.sysMgr.Auth().ChangePassword(c.Request.Context(), uid, req.OldPassword, req.NewPassword); err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 400, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 400, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "密码修改成功"})
+	s.respondJSON(c, http.StatusOK, 200, "密码修改成功", nil, nil)
 }
 
 // ─── 用户管理接口 ─────────────────────────────────────────────────────────────
@@ -188,110 +184,110 @@ func (s *Server) listUsers(c *gin.Context) {
 	}
 	users, total, err := s.sysMgr.User().ListUsers(c.Request.Context(), filter, page, pageSize)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "data": gin.H{"list": users, "total": total}})
+	s.respondJSON(c, http.StatusOK, 200, "", gin.H{"list": users}, total)
 }
 
 func (s *Server) createUser(c *gin.Context) {
 	var user sysmodel.SystemUser
 	if err := c.ShouldBindJSON(&user); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		s.respondError(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	id, err := s.sysMgr.User().CreateUser(c.Request.Context(), &user)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "data": gin.H{"id": id}})
+	s.respondJSON(c, http.StatusOK, 200, "", gin.H{"id": id}, nil)
 }
 
 func (s *Server) updateUser(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "无效的用户ID"})
+		s.respondError(c, http.StatusBadRequest, 400, "无效的用户ID")
 		return
 	}
 	var user sysmodel.SystemUser
 	if err = c.ShouldBindJSON(&user); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		s.respondError(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	user.ID = id
 	if err = s.sysMgr.User().UpdateUser(c.Request.Context(), &user); err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "更新成功"})
+	s.respondJSON(c, http.StatusOK, 200, "更新成功", nil, nil)
 }
 
 func (s *Server) deleteUser(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "无效的用户ID"})
+		s.respondError(c, http.StatusBadRequest, 400, "无效的用户ID")
 		return
 	}
 	if err = s.sysMgr.User().DeleteUser(c.Request.Context(), id); err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "删除成功"})
+	s.respondJSON(c, http.StatusOK, 200, "删除成功", nil, nil)
 }
 
 func (s *Server) getUserRoles(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "无效的用户ID"})
+		s.respondError(c, http.StatusBadRequest, 400, "无效的用户ID")
 		return
 	}
 	roles, err := s.sysMgr.User().GetUserRoles(c.Request.Context(), id)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "data": roles})
+	s.respondJSON(c, http.StatusOK, 200, "", roles, nil)
 }
 
 func (s *Server) assignUserRoles(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "无效的用户ID"})
+		s.respondError(c, http.StatusBadRequest, 400, "无效的用户ID")
 		return
 	}
 	var req struct {
 		RoleIDs []int64 `json:"roleIds" binding:"required"`
 	}
 	if err = c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		s.respondError(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	if err = s.sysMgr.User().AssignRoles(c.Request.Context(), id, req.RoleIDs); err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "分配角色成功"})
+	s.respondJSON(c, http.StatusOK, 200, "分配角色成功", nil, nil)
 }
 
 func (s *Server) adminResetUserPassword(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "无效的用户ID"})
+		s.respondError(c, http.StatusBadRequest, 400, "无效的用户ID")
 		return
 	}
 	var req struct {
 		NewPassword string `json:"newPassword" binding:"required"`
 	}
 	if err = c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		s.respondError(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	if err = s.sysMgr.User().ResetPassword(c.Request.Context(), id, req.NewPassword); err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "密码重置成功"})
+	s.respondJSON(c, http.StatusOK, 200, "密码重置成功", nil, nil)
 }
 
 // ─── 角色管理接口 ─────────────────────────────────────────────────────────────
@@ -302,90 +298,90 @@ func (s *Server) listRoles(c *gin.Context) {
 	filter := sysmodel.RoleFilter{RoleName: c.Query("roleName")}
 	roles, total, err := s.sysMgr.Role().ListRoles(c.Request.Context(), filter, page, pageSize)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "data": gin.H{"list": roles, "total": total}})
+	s.respondJSON(c, http.StatusOK, 200, "", gin.H{"list": roles}, total)
 }
 
 func (s *Server) createRole(c *gin.Context) {
 	var role sysmodel.SystemRole
 	if err := c.ShouldBindJSON(&role); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		s.respondError(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	id, err := s.sysMgr.Role().CreateRole(c.Request.Context(), &role)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "data": gin.H{"id": id}})
+	s.respondJSON(c, http.StatusOK, 200, "", gin.H{"id": id}, nil)
 }
 
 func (s *Server) updateRole(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "无效的角色ID"})
+		s.respondError(c, http.StatusBadRequest, 400, "无效的角色ID")
 		return
 	}
 	var role sysmodel.SystemRole
 	if err = c.ShouldBindJSON(&role); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		s.respondError(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	role.ID = id
 	if err = s.sysMgr.Role().UpdateRole(c.Request.Context(), &role); err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "更新成功"})
+	s.respondJSON(c, http.StatusOK, 200, "更新成功", nil, nil)
 }
 
 func (s *Server) deleteRole(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "无效的角色ID"})
+		s.respondError(c, http.StatusBadRequest, 400, "无效的角色ID")
 		return
 	}
 	if err = s.sysMgr.Role().DeleteRole(c.Request.Context(), id); err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "删除成功"})
+	s.respondJSON(c, http.StatusOK, 200, "删除成功", nil, nil)
 }
 
 func (s *Server) getRoleMenus(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "无效的角色ID"})
+		s.respondError(c, http.StatusBadRequest, 400, "无效的角色ID")
 		return
 	}
 	menuIDs, err := s.sysMgr.Role().GetRoleMenus(c.Request.Context(), id)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "data": menuIDs})
+	s.respondJSON(c, http.StatusOK, 200, "", menuIDs, nil)
 }
 
 func (s *Server) assignRoleMenus(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "无效的角色ID"})
+		s.respondError(c, http.StatusBadRequest, 400, "无效的角色ID")
 		return
 	}
 	var req struct {
 		MenuIDs []int64 `json:"menuIds"`
 	}
 	if err = c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		s.respondError(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	if err = s.sysMgr.Role().AssignRoleMenus(c.Request.Context(), id, req.MenuIDs); err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "分配菜单成功"})
+	s.respondJSON(c, http.StatusOK, 200, "分配菜单成功", nil, nil)
 }
 
 // ─── 菜单管理接口 ─────────────────────────────────────────────────────────────
@@ -394,66 +390,66 @@ func (s *Server) listMenus(c *gin.Context) {
 	filter := sysmodel.MenuFilter{MenuName: c.Query("menuName")}
 	menus, err := s.sysMgr.Menu().ListMenus(c.Request.Context(), filter)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "data": menus})
+	s.respondJSON(c, http.StatusOK, 200, "", menus, nil)
 }
 
 func (s *Server) getMenuTree(c *gin.Context) {
 	filter := sysmodel.MenuFilter{MenuName: c.Query("menuName")}
 	tree, err := s.sysMgr.Menu().GetMenuTree(c.Request.Context(), filter)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "data": tree})
+	s.respondJSON(c, http.StatusOK, 200, "", tree, nil)
 }
 
 func (s *Server) createMenu(c *gin.Context) {
 	var menu sysmodel.SystemMenu
 	if err := c.ShouldBindJSON(&menu); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		s.respondError(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	id, err := s.sysMgr.Menu().CreateMenu(c.Request.Context(), &menu)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "data": gin.H{"id": id}})
+	s.respondJSON(c, http.StatusOK, 200, "", gin.H{"id": id}, nil)
 }
 
 func (s *Server) updateMenu(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "无效的菜单ID"})
+		s.respondError(c, http.StatusBadRequest, 400, "无效的菜单ID")
 		return
 	}
 	var menu sysmodel.SystemMenu
 	if err = c.ShouldBindJSON(&menu); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		s.respondError(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	menu.ID = id
 	if err = s.sysMgr.Menu().UpdateMenu(c.Request.Context(), &menu); err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "更新成功"})
+	s.respondJSON(c, http.StatusOK, 200, "更新成功", nil, nil)
 }
 
 func (s *Server) deleteMenu(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "无效的菜单ID"})
+		s.respondError(c, http.StatusBadRequest, 400, "无效的菜单ID")
 		return
 	}
 	if err = s.sysMgr.Menu().DeleteMenu(c.Request.Context(), id); err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "删除成功"})
+	s.respondJSON(c, http.StatusOK, 200, "删除成功", nil, nil)
 }
 
 // ─── 数据字典接口 ─────────────────────────────────────────────────────────────
@@ -461,20 +457,20 @@ func (s *Server) deleteMenu(c *gin.Context) {
 func (s *Server) listDictTypes(c *gin.Context) {
 	types, err := s.sysMgr.Dictionary().ListDictTypes(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "data": types})
+	s.respondJSON(c, http.StatusOK, 200, "", types, nil)
 }
 
 func (s *Server) listDictData(c *gin.Context) {
 	dictType := c.Param("type")
 	items, err := s.sysMgr.Dictionary().ListDictData(c.Request.Context(), dictType)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "data": items})
+	s.respondJSON(c, http.StatusOK, 200, "", items, nil)
 }
 
 func (s *Server) pageDictData(c *gin.Context) {
@@ -486,55 +482,54 @@ func (s *Server) pageDictData(c *gin.Context) {
 	}
 	items, total, err := s.sysMgr.Dictionary().PageDictData(c.Request.Context(), filter, page, pageSize)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "data": gin.H{"list": items, "total": total}})
+	s.respondJSON(c, http.StatusOK, 200, "", gin.H{"list": items}, total)
 }
 
 func (s *Server) createDictData(c *gin.Context) {
 	var item sysmodel.DictionaryItem
 	if err := c.ShouldBindJSON(&item); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		s.respondError(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	id, err := s.sysMgr.Dictionary().CreateDictData(c.Request.Context(), &item)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "data": gin.H{"dicId": id}})
+	s.respondJSON(c, http.StatusOK, 200, "", gin.H{"dicId": id}, nil)
 }
 
 func (s *Server) updateDictData(c *gin.Context) {
 	dicID, err := strconv.ParseInt(c.Param("dicId"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "无效的字典ID"})
+		s.respondError(c, http.StatusBadRequest, 400, "无效的字典ID")
 		return
 	}
 	var item sysmodel.DictionaryItem
 	if err = c.ShouldBindJSON(&item); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		s.respondError(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	item.DicID = dicID
 	if err = s.sysMgr.Dictionary().UpdateDictData(c.Request.Context(), &item); err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "更新成功"})
+	s.respondJSON(c, http.StatusOK, 200, "更新成功", nil, nil)
 }
 
 func (s *Server) deleteDictData(c *gin.Context) {
 	dicID, err := strconv.ParseInt(c.Param("dicId"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "无效的字典ID"})
+		s.respondError(c, http.StatusBadRequest, 400, "无效的字典ID")
 		return
 	}
 	if err = s.sysMgr.Dictionary().DeleteDictData(c.Request.Context(), dicID); err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": err.Error()})
+		s.respondError(c, http.StatusOK, 500, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "删除成功"})
+	s.respondJSON(c, http.StatusOK, 200, "删除成功", nil, nil)
 }
-

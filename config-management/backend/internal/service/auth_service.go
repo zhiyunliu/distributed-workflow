@@ -64,6 +64,10 @@ func (s *authService) Login(ctx context.Context, req *sysmodel.LoginRequest) (*s
 	if user.Status == 0 {
 		return nil, errors.New("账号已禁用")
 	}
+	if err = bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
+		GlobalLoginTracker.RecordFailedAttempt(req.Username)
+		return nil, errors.New("用户名或密码错误")
+	}
 
 	secret, err := s.resolveSecret()
 	if err != nil {

@@ -2,25 +2,32 @@ package service
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
-	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/dao"
 	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/sysmodel"
-	"golang.org/x/crypto/pbkdf2"
+	"github.com/zhiyunliu/distributed-workflow/config-management/backend/internal/sysrepo"
+	"golang.org/x/crypto/bcrypt"
 )
+
+type initRepository interface {
+	UserRepo() sysrepo.UserRepo
+	RoleRepo() sysrepo.RoleRepo
+	MenuRepo() sysrepo.MenuRepo
+	DictRepo() sysrepo.DictRepo
+}
 
 // InitService 初始化服务
 type InitService struct {
-	repo *dao.Repository
+	repo initRepository
 }
 
 // NewInitService 创建初始化服务实例
-func NewInitService(repo *dao.Repository) *InitService {
+func NewInitService(repo initRepository) *InitService {
 	return &InitService{
 		repo: repo,
 	}
@@ -35,7 +42,7 @@ func (s *InitService) InitializeSystem(ctx context.Context) error {
 	// 检查是否已有超级管理员角色
 	roleRepo := s.repo.RoleRepo()
 	role, err := roleRepo.GetByCode(ctx, "super_admin")
-	if err != nil && fmt.Sprint(err) != "sql: no rows in result set" {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 
@@ -62,19 +69,27 @@ func (s *InitService) InitializeSystem(ctx context.Context) error {
 	// 检查是否已有超级管理员用户
 	userRepo := s.repo.UserRepo()
 	user, err := userRepo.GetByUsername(ctx, "admin")
-	if err != nil && fmt.Sprint(err) != "sql: no rows in result set" {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 
 	if user == nil {
+		initAdminPassword := os.Getenv("INIT_ADMIN_PASSWORD")
+		if initAdminPassword == "" {
+			return errors.New("missing INIT_ADMIN_PASSWORD, refuse to auto create admin")
+		}
+		if err := ValidatePassword(initAdminPassword, DefaultPasswordPolicy); err != nil {
+			return fmt.Errorf("invalid INIT_ADMIN_PASSWORD: %w", err)
+		}
+
 		log.Println("创建超级管理员用户")
-		passwordHash, _, err := s.hashPassword("admin123")
+		hash, err := bcrypt.GenerateFromPassword([]byte(initAdminPassword), bcrypt.DefaultCost)
 		if err != nil {
 			return err
 		}
 		adminUser := &sysmodel.SystemUser{
 			Username:   "admin",
-			Password:   passwordHash,
+			Password:   string(hash),
 			RealName:   "超级管理员",
 			Status:     1,
 			CreateTime: time.Now(),
@@ -171,20 +186,6 @@ func (s *InitService) InitializeSystem(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-// hashPassword 使用 PBKDF2 算法加密密码
-func (s *InitService) hashPassword(password string) (string, string, error) {
-	salt := make([]byte, 16)
-	_, err := rand.Read(salt)
-	if err != nil {
-		return "", "", err
-	}
-
-	hash := fmt.Sprintf("%x", pbkdf2.Key([]byte(password), salt, 4096, 32, sha256.New))
-	encodedSalt := base64.StdEncoding.EncodeToString(salt)
-
-	return hash, encodedSalt, nil
 }
 
 func (s *InitService) getDefaultMenus() []*sysmodel.SystemMenu {
