@@ -11,7 +11,7 @@
 | 统一设计入口 | 前端使用一套 Vue3/Vite/TypeScript/Element Plus 设计器承载两类流程模式，降低建模学习成本。 |
 | 统一元模型与存储 | 使用统一 JSON Schema 和显式 `nodes` / `connections` 边集存储流程定义，支撑版本、审计、导入导出和跨引擎标准调用。 |
 | 双引擎能力互补 | `WORKFLOW` 负责人工任务、长周期状态和事务补偿；`RULE_CHAIN` 负责高并发事件链路、DAG 调度和低延迟处理。 |
-| 企业级数据库适配 | 以 SQL Server 为核心持久化基础，JSON 字段使用 `nvarchar(max)`，检索维度结构化，日志支持归档或分区。 |
+| 企业级数据库适配 | 以 SQL Server 为核心持久化基础，JSON 字段使用 `varchar(max)`，检索维度结构化，日志支持归档或分区。 |
 | 复用 glue 基础能力 | 后端基于 Go 1.24+ 与 `github.com/zhiyunliu/glue`，复用框架的 API、中间件、缓存、日志、监控和服务治理能力。 |
 
 ## 2. 问题域与设计边界
@@ -93,7 +93,7 @@ flowchart LR
 | ADR-001 统一显式边集存储 | `nodes` 与 `connections` 分离存储，连线作为一等对象。 | 规则链天然匹配 DAG；前端渲染直接；工作流隐式连线可无损映射。 | 模型校验和版本 diff 更清晰，工作流加载时需要转换邻接关系。 |
 | ADR-002 双引擎内核隔离 | 工作流与规则链各自维护运行时上下文和调度器。 | 两类执行语义差异大，强行合并会增加复杂度和故障影响面。 | 需要路由层和标准跨引擎节点维持统一入口。 |
 | ADR-003 规则链纯 Go 自研 | 不引入第三方规则链引擎作为内核依赖。 | 保持自主可控，适配 glue 框架和项目节点模型。 | 需要优先建设 DAG 校验、ConnectionRouter、节点调度和执行日志能力。 |
-| ADR-004 SQL Server JSON 与结构化列并用 | `model_content`、变量、快照、载荷使用 `nvarchar(max)`，常用查询维度独立列化。 | SQL Server 支持 JSON 函数，但大 JSON 检索成本高。 | 表设计需提前冗余 `flow_code`、`status`、`trace_id`、`business_key` 等检索键。 |
+| ADR-004 SQL Server JSON 与结构化列并用 | `model_content`、变量、快照、载荷使用 `varchar(max)`，常用查询维度独立列化。 | SQL Server 支持 JSON 函数，但大 JSON 检索成本高。 | 表设计需提前冗余 `flow_code`、`status`、`trace_id`、`business_key` 等检索键。 |
 | ADR-005 跨引擎只走标准节点 | 工作流调用规则链、规则链启动工作流，只能通过标准节点完成。 | 避免内部上下文耦合和跨引擎直接跳转。 | 联动链路可审计、可限流、可权限控制。 |
 
 ## 6. 架构风险与应对
@@ -102,7 +102,7 @@ flowchart LR
 | --- | --- | --- |
 | 元模型过度抽象 | 为兼容两类引擎而牺牲执行语义清晰度。 | 元模型只统一存储和设计表达；执行语义由各引擎解释。 |
 | 规则链日志增长过快 | 高并发场景下执行日志和节点日志快速膨胀。 | 总表与明细表分层保留，按月归档或分区，热数据短保留，审计数据长保留。 |
-| JSON 字段检索性能下降 | 频繁在 `nvarchar(max)` 中解析查询条件。 | 常用查询维度冗余普通列，JSON 仅保存完整上下文和模型。 |
+| JSON 字段检索性能下降 | 频繁在 `varchar(max)` 中解析查询条件。 | 常用查询维度冗余普通列，JSON 仅保存完整上下文和模型。 |
 | 跨引擎调用造成链路复杂 | 联动失败、超时、重复执行难以追踪。 | 强制携带 `trace_id`，标准节点记录输入输出，支持幂等键和超时策略。 |
 | 前端模式混用 | 用户在规则链中配置人工任务或循环连线。 | 设计器按模式隔离节点工具箱，保存前执行实时校验和后端二次校验。 |
 
@@ -277,6 +277,8 @@ erDiagram
     sch_rulechain_exec_log ||--o{ sch_rulechain_node_log : has
 ```
 
+  上图为核心表逻辑关系图，仅表达流程定义、实例、执行总表和节点日志之间的业务关联与查询追踪关系，不代表数据库层面的物理外键设计。核心表之间不创建 `FOREIGN KEY` 等物理外键约束；关联完整性、存在性校验、删除或停用限制、级联处理由 `service` / `dao` 层代码在业务事务中实现。表内主键、业务唯一约束、普通索引和组合索引建议仍按下文保留。
+
 | 表名 | 分类 | 职责 |
 | --- | --- | --- |
 | `sch_flow_definition` | 通用定义表 | 保存统一元模型、流程类型、版本、状态和最新版本标记，是双引擎共同的定义入口。 |
@@ -289,12 +291,13 @@ erDiagram
 
 | 规则 | 说明 |
 | --- | --- |
-| 主键 | 建议使用 `nvarchar(64)` 或项目统一 ID 类型，所有核心表保留 `id` 作为物理主键。 |
+| 主键 | 建议使用 `varchar(64)` 或项目统一 ID 类型，所有核心表保留 `id` 作为物理主键。 |
 | 业务唯一键 | 工作流实例使用 `instance_id`，规则链执行使用 `exec_id`，用于外部查询和链路关联。 |
-| JSON 字段 | `model_content`、`variables`、`state_snapshot`、`input_data`、`output_data`、`payload`、`result_data` 使用 `nvarchar(max)`。 |
+| JSON 字段 | `model_content`、`variables`、`state_snapshot`、`input_data`、`output_data`、`payload`、`result_data` 使用 `varchar(max)`。 |
 | JSON 校验 | 建议对 JSON 字段增加 `ISJSON(...) = 1` 的约束或保存前校验；允许空的字段需明确空值策略。 |
 | 检索冗余 | `flow_code`、`flow_type`、`version`、`status`、`business_key`、`trace_id`、`node_id`、`source` 等高频查询维度必须普通列化。 |
-| 时间字段 | 使用 `datetime2(3)`；`create_time` 默认 `GETDATE()`；执行类表必须有 `start_time`、`end_time`、`duration_ms`。 |
+| 时间字段 | 使用 `datetime`；`create_time` 默认 `GETDATE()`；执行类表必须有 `start_time`、`end_time`、`duration_ms`。 |
+| 逻辑关联 | `flow_definition_id`、`instance_id`、`exec_id` 等字段仅表达逻辑关联和查询追踪，不创建数据库物理外键。 |
 | 错误字段 | 错误码和错误消息分离；执行日志中的 `error_code` 存储与统一 `sub_code` 对齐的稳定错误标识，必要时保留内部错误到 `sub_code` 的映射；对外错误码遵循 `constants/respcode` 与 `constants/subcode` 常量。 |
 | 审计字段 | 定义表保留 `create_by`、`update_by`；发布、执行、跨引擎调用需要记录操作者或来源。 |
 
@@ -304,19 +307,19 @@ erDiagram
 
 | 字段 | 建议类型 | 说明 |
 | --- | --- | --- |
-| `id` | `nvarchar(64)` | 主键。 |
-| `flow_code` | `nvarchar(64)` | 流程编码，同一流程多版本共享。 |
-| `name` | `nvarchar(128)` | 流程名称。 |
-| `flow_type` | `nvarchar(32)` | `WORKFLOW` 或 `RULE_CHAIN`。 |
+| `id` | `varchar(64)` | 主键。 |
+| `flow_code` | `varchar(64)` | 流程编码，同一流程多版本共享。 |
+| `name` | `varchar(128)` | 流程名称。 |
+| `flow_type` | `varchar(32)` | `WORKFLOW` 或 `RULE_CHAIN`。 |
 | `version` | `int` | 同一 `flow_code` 下递增。 |
-| `model_content` | `nvarchar(max)` | 统一 JSON Schema 完整内容，建议 `ISJSON` 校验。 |
+| `model_content` | `varchar(max)` | 统一 JSON Schema 完整内容，建议 `ISJSON` 校验。 |
 | `status` | `tinyint` | 草稿、已发布、停用等状态，具体枚举由常量定义。 |
 | `is_latest` | `bit` | 是否为当前最新版本。 |
-| `description` | `nvarchar(512)` | 流程说明。 |
-| `create_by` | `nvarchar(64)` | 创建人。 |
-| `update_by` | `nvarchar(64)` | 更新人。 |
-| `create_time` | `datetime2(3)` | 创建时间，默认 `GETDATE()`。 |
-| `update_time` | `datetime2(3)` | 更新时间。 |
+| `description` | `varchar(512)` | 流程说明。 |
+| `create_by` | `varchar(64)` | 创建人。 |
+| `update_by` | `varchar(64)` | 更新人。 |
+| `create_time` | `datetime` | 创建时间，默认 `GETDATE()`。 |
+| `update_time` | `datetime` | 更新时间。 |
 
 约束与索引建议：
 
@@ -333,22 +336,22 @@ erDiagram
 
 | 字段 | 建议类型 | 说明 |
 | --- | --- | --- |
-| `id` | `nvarchar(64)` | 主键。 |
-| `instance_id` | `nvarchar(64)` | 工作流实例唯一标识。 |
-| `flow_definition_id` | `nvarchar(64)` | 关联 `sch_flow_definition.id`。 |
-| `flow_code` | `nvarchar(64)` | 冗余流程编码，便于查询。 |
+| `id` | `varchar(64)` | 主键。 |
+| `instance_id` | `varchar(64)` | 工作流实例唯一标识。 |
+| `flow_definition_id` | `varchar(64)` | 逻辑关联 `sch_flow_definition.id`。 |
+| `flow_code` | `varchar(64)` | 冗余流程编码，便于查询。 |
 | `flow_version` | `int` | 执行时使用的流程版本。 |
-| `business_key` | `nvarchar(128)` | 外部业务单据或对象标识。 |
+| `business_key` | `varchar(128)` | 外部业务单据或对象标识。 |
 | `status` | `tinyint` | 运行中、等待中、完成、失败、取消等状态。 |
-| `current_node_id` | `nvarchar(64)` | 当前节点 ID。 |
-| `current_node_name` | `nvarchar(128)` | 当前节点名称，便于列表展示。 |
-| `variables` | `nvarchar(max)` | 流程变量 JSON，建议 `ISJSON` 校验。 |
-| `state_snapshot` | `nvarchar(max)` | 引擎恢复所需状态快照 JSON，建议 `ISJSON` 校验。 |
-| `start_time` | `datetime2(3)` | 实例开始时间。 |
-| `end_time` | `datetime2(3)` | 实例结束时间。 |
-| `last_active_time` | `datetime2(3)` | 最近活跃时间，用于待办、超时和清理。 |
-| `create_time` | `datetime2(3)` | 创建时间，默认 `GETDATE()`。 |
-| `update_time` | `datetime2(3)` | 更新时间。 |
+| `current_node_id` | `varchar(64)` | 当前节点 ID。 |
+| `current_node_name` | `varchar(128)` | 当前节点名称，便于列表展示。 |
+| `variables` | `varchar(max)` | 流程变量 JSON，建议 `ISJSON` 校验。 |
+| `state_snapshot` | `varchar(max)` | 引擎恢复所需状态快照 JSON，建议 `ISJSON` 校验。 |
+| `start_time` | `datetime` | 实例开始时间。 |
+| `end_time` | `datetime` | 实例结束时间。 |
+| `last_active_time` | `datetime` | 最近活跃时间，用于待办、超时和清理。 |
+| `create_time` | `datetime` | 创建时间，默认 `GETDATE()`。 |
+| `update_time` | `datetime` | 更新时间。 |
 
 约束与索引建议：
 
@@ -365,21 +368,21 @@ erDiagram
 
 | 字段 | 建议类型 | 说明 |
 | --- | --- | --- |
-| `id` | `nvarchar(64)` | 主键。 |
-| `instance_id` | `nvarchar(64)` | 工作流实例 ID。 |
-| `flow_definition_id` | `nvarchar(64)` | 流程定义 ID。 |
-| `flow_code` | `nvarchar(64)` | 冗余流程编码。 |
-| `node_id` | `nvarchar(64)` | 节点 ID。 |
-| `node_name` | `nvarchar(128)` | 节点名称。 |
-| `node_type` | `nvarchar(64)` | 节点类型。 |
+| `id` | `varchar(64)` | 主键。 |
+| `instance_id` | `varchar(64)` | 逻辑关联工作流实例 ID。 |
+| `flow_definition_id` | `varchar(64)` | 逻辑关联流程定义 ID。 |
+| `flow_code` | `varchar(64)` | 冗余流程编码。 |
+| `node_id` | `varchar(64)` | 节点 ID。 |
+| `node_name` | `varchar(128)` | 节点名称。 |
+| `node_type` | `varchar(64)` | 节点类型。 |
 | `status` | `tinyint` | 节点执行状态。 |
-| `input_data` | `nvarchar(max)` | 节点输入 JSON，建议 `ISJSON` 校验。 |
-| `output_data` | `nvarchar(max)` | 节点输出 JSON，建议 `ISJSON` 校验。 |
-| `error_code` | `nvarchar(64)` | 错误码或子码。 |
-| `error_message` | `nvarchar(1024)` | 错误信息。 |
-| `trace_id` | `nvarchar(128)` | 链路追踪 ID。 |
-| `start_time` | `datetime2(3)` | 节点开始时间。 |
-| `end_time` | `datetime2(3)` | 节点结束时间。 |
+| `input_data` | `varchar(max)` | 节点输入 JSON，建议 `ISJSON` 校验。 |
+| `output_data` | `varchar(max)` | 节点输出 JSON，建议 `ISJSON` 校验。 |
+| `error_code` | `varchar(64)` | 错误码或子码。 |
+| `error_message` | `varchar(1024)` | 错误信息。 |
+| `trace_id` | `varchar(128)` | 链路追踪 ID。 |
+| `start_time` | `datetime` | 节点开始时间。 |
+| `end_time` | `datetime` | 节点结束时间。 |
 | `duration_ms` | `bigint` | 节点耗时，单位毫秒。 |
 
 约束与索引建议：
@@ -397,23 +400,23 @@ erDiagram
 
 | 字段 | 建议类型 | 说明 |
 | --- | --- | --- |
-| `id` | `nvarchar(64)` | 主键。 |
-| `exec_id` | `nvarchar(64)` | 单次规则链执行唯一标识。 |
-| `flow_definition_id` | `nvarchar(64)` | 流程定义 ID。 |
-| `flow_code` | `nvarchar(64)` | 冗余流程编码。 |
+| `id` | `varchar(64)` | 主键。 |
+| `exec_id` | `varchar(64)` | 单次规则链执行唯一标识。 |
+| `flow_definition_id` | `varchar(64)` | 逻辑关联流程定义 ID。 |
+| `flow_code` | `varchar(64)` | 冗余流程编码。 |
 | `flow_version` | `int` | 执行版本。 |
-| `message_id` | `nvarchar(128)` | 外部消息 ID，用于幂等和追踪。 |
-| `source` | `nvarchar(128)` | 消息来源。 |
+| `message_id` | `varchar(128)` | 外部消息 ID，用于幂等和追踪。 |
+| `source` | `varchar(128)` | 消息来源。 |
 | `status` | `tinyint` | 执行成功、失败、部分失败、超时等状态。 |
-| `payload` | `nvarchar(max)` | 原始载荷 JSON，建议 `ISJSON` 校验。 |
-| `result_data` | `nvarchar(max)` | 执行结果 JSON，建议 `ISJSON` 校验。 |
-| `error_code` | `nvarchar(64)` | 执行错误码或统一 `sub_code`，与 `constants/subcode` 中的稳定标识保持一致。 |
-| `error_message` | `nvarchar(1024)` | 执行错误信息。 |
-| `trace_id` | `nvarchar(128)` | 链路追踪 ID。 |
-| `start_time` | `datetime2(3)` | 执行开始时间。 |
-| `end_time` | `datetime2(3)` | 执行结束时间。 |
+| `payload` | `varchar(max)` | 原始载荷 JSON，建议 `ISJSON` 校验。 |
+| `result_data` | `varchar(max)` | 执行结果 JSON，建议 `ISJSON` 校验。 |
+| `error_code` | `varchar(64)` | 执行错误码或统一 `sub_code`，与 `constants/subcode` 中的稳定标识保持一致。 |
+| `error_message` | `varchar(1024)` | 执行错误信息。 |
+| `trace_id` | `varchar(128)` | 链路追踪 ID。 |
+| `start_time` | `datetime` | 执行开始时间。 |
+| `end_time` | `datetime` | 执行结束时间。 |
 | `duration_ms` | `bigint` | 执行总耗时，单位毫秒。 |
-| `create_time` | `datetime2(3)` | 创建时间，默认 `GETDATE()`。 |
+| `create_time` | `datetime` | 创建时间，默认 `GETDATE()`。 |
 
 约束与索引建议：
 
@@ -430,24 +433,24 @@ erDiagram
 
 | 字段 | 建议类型 | 说明 |
 | --- | --- | --- |
-| `id` | `nvarchar(64)` | 主键。 |
-| `exec_id` | `nvarchar(64)` | 关联规则链执行 ID。 |
-| `flow_definition_id` | `nvarchar(64)` | 流程定义 ID。 |
-| `flow_code` | `nvarchar(64)` | 冗余流程编码。 |
-| `node_id` | `nvarchar(64)` | 节点 ID。 |
-| `node_name` | `nvarchar(128)` | 节点名称。 |
-| `node_type` | `nvarchar(64)` | 节点类型。 |
-| `relation_type` | `nvarchar(64)` | 命中的连线关系类型，如 `SUCCESS`、`FAILURE`、`CONDITION`。 |
-| `from_node_id` | `nvarchar(64)` | 上游节点 ID。 |
-| `to_node_ids` | `nvarchar(max)` | 后继节点 ID 集合 JSON，建议 `ISJSON` 校验。 |
+| `id` | `varchar(64)` | 主键。 |
+| `exec_id` | `varchar(64)` | 逻辑关联规则链执行 ID。 |
+| `flow_definition_id` | `varchar(64)` | 逻辑关联流程定义 ID。 |
+| `flow_code` | `varchar(64)` | 冗余流程编码。 |
+| `node_id` | `varchar(64)` | 节点 ID。 |
+| `node_name` | `varchar(128)` | 节点名称。 |
+| `node_type` | `varchar(64)` | 节点类型。 |
+| `relation_type` | `varchar(64)` | 命中的连线关系类型，如 `SUCCESS`、`FAILURE`、`CONDITION`。 |
+| `from_node_id` | `varchar(64)` | 上游节点 ID。 |
+| `to_node_ids` | `varchar(max)` | 后继节点 ID 集合 JSON，建议 `ISJSON` 校验。 |
 | `status` | `tinyint` | 节点执行状态。 |
-| `input_data` | `nvarchar(max)` | 节点输入 JSON，建议 `ISJSON` 校验。 |
-| `output_data` | `nvarchar(max)` | 节点输出 JSON，建议 `ISJSON` 校验。 |
-| `error_code` | `nvarchar(64)` | 节点错误码或统一 `sub_code`，与 `sch_workflow_node_log.error_code` 保持一致。 |
-| `error_message` | `nvarchar(1024)` | 节点错误信息。 |
-| `trace_id` | `nvarchar(128)` | 链路追踪 ID。 |
-| `start_time` | `datetime2(3)` | 节点开始时间。 |
-| `end_time` | `datetime2(3)` | 节点结束时间。 |
+| `input_data` | `varchar(max)` | 节点输入 JSON，建议 `ISJSON` 校验。 |
+| `output_data` | `varchar(max)` | 节点输出 JSON，建议 `ISJSON` 校验。 |
+| `error_code` | `varchar(64)` | 节点错误码或统一 `sub_code`，与 `sch_workflow_node_log.error_code` 保持一致。 |
+| `error_message` | `varchar(1024)` | 节点错误信息。 |
+| `trace_id` | `varchar(128)` | 链路追踪 ID。 |
+| `start_time` | `datetime` | 节点开始时间。 |
+| `end_time` | `datetime` | 节点结束时间。 |
 | `duration_ms` | `bigint` | 节点耗时，单位毫秒。 |
 
 约束与索引建议：
@@ -503,16 +506,16 @@ API 层只处理 HTTP、JWT、参数绑定和响应封装，业务编排进入 `
 | 资源 | 路径与方法 | 用途 | 关键入参 | 返回 `data` | 权限要求 | 主要错误码方向 |
 | --- | --- | --- | --- | --- | --- | --- |
 | 保存草稿 | `POST /api/basic-distributed/flows/drafts/save` | 创建或更新流程草稿，保存统一元模型。 | `flow_code`、`flow_type`、`name`、`model_content`、`description`。 | `definition_id`、`flow_code`、`version`、`status`、`update_time`。 | 设计权限。 | 参数错误、模型格式错误、版本冲突、无权限。 |
-| 发布版本 | `POST /api/basic-distributed/flows/{definition_id}/publish` | 将草稿发布为可执行版本，发布前执行后端模型校验。 | `definition_id`、发布说明、版本策略。 | `definition_id`、`flow_code`、`version`、`status`、`publish_time`。 | 发布权限。 | 模型校验失败、状态不允许、版本冲突、无权限。 |
-| 停用版本 | `POST /api/basic-distributed/flows/{definition_id}/disable` | 停用已发布版本，阻止新执行请求进入该版本。 | `definition_id`、停用原因。 | `definition_id`、`status`、`update_time`。 | 发布或管理权限。 | 定义不存在、状态不允许、运行中依赖限制、无权限。 |
+| 发布版本 | `POST /api/basic-distributed/flows/:definition_id/publish` | 将草稿发布为可执行版本，发布前执行后端模型校验。 | `definition_id`、发布说明、版本策略。 | `definition_id`、`flow_code`、`version`、`status`、`publish_time`。 | 发布权限。 | 模型校验失败、状态不允许、版本冲突、无权限。 |
+| 停用版本 | `POST /api/basic-distributed/flows/:definition_id/disable` | 停用已发布版本，阻止新执行请求进入该版本。 | `definition_id`、停用原因。 | `definition_id`、`status`、`update_time`。 | 发布或管理权限。 | 定义不存在、状态不允许、运行中依赖限制、无权限。 |
 | 模型校验 | `POST /api/basic-distributed/flows/model/validate` | 对前端模型执行保存前或发布前校验。 | `flow_type`、`model_content`、可选 `definition_id`。 | `valid`、`errors`、`warnings`、`normalized_model`。 | 设计权限。 | JSON 非法、节点缺失、连线非法、规则链 DAG 环、节点类型混用。 |
 | 启动工作流 | `POST /api/basic-distributed/workflows/start` | 按已发布工作流定义创建实例。 | `flow_code`、可选 `version`、`business_key`、`variables`、`trace_id`。 | `instance_id`、`flow_code`、`version`、`status`、`trace_id`。 | 执行权限。 | 定义未发布、版本不存在、业务键冲突、参数错误、无权限。 |
 | 执行规则链 | `POST /api/basic-distributed/rulechains/execute` | 按已发布规则链定义处理单次消息。 | `flow_code`、可选 `version`、`message_id`、`source`、`payload`、`trace_id`。 | `exec_id`、`status`、`result_data`、`duration_ms`、`trace_id`。 | 执行权限，必要时独立限流授权。 | 定义未发布、DAG 不可执行、节点执行失败、超时、限流、无权限。 |
-| 查询实例 | `GET /api/basic-distributed/workflows/instances`、`GET /api/basic-distributed/workflows/instances/{instance_id}` | 查询工作流实例列表或详情。 | `flow_code`、`business_key`、`status`、时间范围、分页参数或 `instance_id`。 | 列表分页或实例详情、当前节点、变量摘要、状态时间。 | 实例查看权限。 | 实例不存在、参数错误、无权限。 |
-| 查询执行日志 | `GET /api/basic-distributed/execution-logs`、`GET /api/basic-distributed/execution-logs/{trace_id}` | 按流程、实例、执行、节点或链路查询执行日志。 | `flow_type`、`flow_code`、`instance_id`、`exec_id`、`trace_id`、`status`、时间范围、分页参数。 | 日志分页、节点明细、错误码、耗时统计、链路摘要。 | 日志查看权限。 | 日志不存在、查询范围过大、参数错误、无权限。 |
+| 查询实例 | `GET /api/basic-distributed/workflows/instances`、`GET /api/basic-distributed/workflows/instances/:instance_id` | 查询工作流实例列表或详情。 | `flow_code`、`business_key`、`status`、时间范围、分页参数或 `instance_id`。 | 列表分页或实例详情、当前节点、变量摘要、状态时间。 | 实例查看权限。 | 实例不存在、参数错误、无权限。 |
+| 查询执行日志 | `GET /api/basic-distributed/execution-logs`、`GET /api/basic-distributed/execution-logs/:trace_id` | 按流程、实例、执行、节点或链路查询执行日志。 | `flow_type`、`flow_code`、`instance_id`、`exec_id`、`trace_id`、`status`、时间范围、分页参数。 | 日志分页、节点明细、错误码、耗时统计、链路摘要。 | 日志查看权限。 | 日志不存在、查询范围过大、参数错误、无权限。 |
 | 调试预览 | `POST /api/basic-distributed/flows/debug/preview` | 使用草稿或指定模型进行模拟执行，返回路径和节点输出。 | `flow_type`、`model_content` 或 `definition_id`、模拟输入、调试选项、`trace_id`。 | `preview_id`、`route_path`、`node_outputs`、`errors`、`trace_id`。 | 设计或调试权限。 | 模型校验失败、模拟输入非法、调试超时、无权限。 |
 | 导入流程 | `POST /api/basic-distributed/flows/import` | 导入统一 JSON Schema，生成草稿或新版本。 | 导入文件或 JSON、冲突处理策略、目标 `flow_code`。 | `definition_id`、`flow_code`、`version`、`status`、导入校验结果。 | 设计权限。 | JSON 非法、版本冲突、模型校验失败、无权限。 |
-| 导出流程 | `GET /api/basic-distributed/flows/{definition_id}/export` | 导出流程定义 JSON，支持评审、备份和迁移。 | `definition_id`、导出格式选项。 | `flow_code`、`version`、`model_content`、元数据。 | 设计或查看权限。 | 定义不存在、状态不可导出、无权限。 |
+| 导出流程 | `GET /api/basic-distributed/flows/:definition_id/export` | 导出流程定义 JSON，支持评审、备份和迁移。 | `definition_id`、导出格式选项。 | `flow_code`、`version`、`model_content`、元数据。 | 设计或查看权限。 | 定义不存在、状态不可导出、无权限。 |
 
 ## 14. 安全设计
 
