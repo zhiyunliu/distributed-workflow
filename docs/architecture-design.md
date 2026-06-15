@@ -502,17 +502,17 @@ API 层只处理 HTTP、JWT、参数绑定和响应封装，业务编排进入 `
 
 | 资源 | 路径与方法 | 用途 | 关键入参 | 返回 `data` | 权限要求 | 主要错误码方向 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 保存草稿 | `POST /api/flows/drafts/save` | 创建或更新流程草稿，保存统一元模型。 | `flow_code`、`flow_type`、`name`、`model_content`、`description`。 | `definition_id`、`flow_code`、`version`、`status`、`update_time`。 | 设计权限。 | 参数错误、模型格式错误、版本冲突、无权限。 |
-| 发布版本 | `POST /api/flows/{definition_id}/publish` | 将草稿发布为可执行版本，发布前执行后端模型校验。 | `definition_id`、发布说明、版本策略。 | `definition_id`、`flow_code`、`version`、`status`、`publish_time`。 | 发布权限。 | 模型校验失败、状态不允许、版本冲突、无权限。 |
-| 停用版本 | `POST /api/flows/{definition_id}/disable` | 停用已发布版本，阻止新执行请求进入该版本。 | `definition_id`、停用原因。 | `definition_id`、`status`、`update_time`。 | 发布或管理权限。 | 定义不存在、状态不允许、运行中依赖限制、无权限。 |
-| 模型校验 | `POST /api/flows/model/validate` | 对前端模型执行保存前或发布前校验。 | `flow_type`、`model_content`、可选 `definition_id`。 | `valid`、`errors`、`warnings`、`normalized_model`。 | 设计权限。 | JSON 非法、节点缺失、连线非法、规则链 DAG 环、节点类型混用。 |
-| 启动工作流 | `POST /api/workflows/start` | 按已发布工作流定义创建实例。 | `flow_code`、可选 `version`、`business_key`、`variables`、`trace_id`。 | `instance_id`、`flow_code`、`version`、`status`、`trace_id`。 | 执行权限。 | 定义未发布、版本不存在、业务键冲突、参数错误、无权限。 |
-| 执行规则链 | `POST /api/rulechains/execute` | 按已发布规则链定义处理单次消息。 | `flow_code`、可选 `version`、`message_id`、`source`、`payload`、`trace_id`。 | `exec_id`、`status`、`result_data`、`duration_ms`、`trace_id`。 | 执行权限，必要时独立限流授权。 | 定义未发布、DAG 不可执行、节点执行失败、超时、限流、无权限。 |
-| 查询实例 | `GET /api/workflows/instances`、`GET /api/workflows/instances/{instance_id}` | 查询工作流实例列表或详情。 | `flow_code`、`business_key`、`status`、时间范围、分页参数或 `instance_id`。 | 列表分页或实例详情、当前节点、变量摘要、状态时间。 | 实例查看权限。 | 实例不存在、参数错误、无权限。 |
-| 查询执行日志 | `GET /api/execution-logs`、`GET /api/execution-logs/{trace_id}` | 按流程、实例、执行、节点或链路查询执行日志。 | `flow_type`、`flow_code`、`instance_id`、`exec_id`、`trace_id`、`status`、时间范围、分页参数。 | 日志分页、节点明细、错误码、耗时统计、链路摘要。 | 日志查看权限。 | 日志不存在、查询范围过大、参数错误、无权限。 |
-| 调试预览 | `POST /api/flows/debug/preview` | 使用草稿或指定模型进行模拟执行，返回路径和节点输出。 | `flow_type`、`model_content` 或 `definition_id`、模拟输入、调试选项、`trace_id`。 | `preview_id`、`route_path`、`node_outputs`、`errors`、`trace_id`。 | 设计或调试权限。 | 模型校验失败、模拟输入非法、调试超时、无权限。 |
-| 导入流程 | `POST /api/flows/import` | 导入统一 JSON Schema，生成草稿或新版本。 | 导入文件或 JSON、冲突处理策略、目标 `flow_code`。 | `definition_id`、`flow_code`、`version`、`status`、导入校验结果。 | 设计权限。 | JSON 非法、版本冲突、模型校验失败、无权限。 |
-| 导出流程 | `GET /api/flows/{definition_id}/export` | 导出流程定义 JSON，支持评审、备份和迁移。 | `definition_id`、导出格式选项。 | `flow_code`、`version`、`model_content`、元数据。 | 设计或查看权限。 | 定义不存在、状态不可导出、无权限。 |
+| 保存草稿 | `POST /api/basic-distributed/flows/drafts/save` | 创建或更新流程草稿，保存统一元模型。 | `flow_code`、`flow_type`、`name`、`model_content`、`description`。 | `definition_id`、`flow_code`、`version`、`status`、`update_time`。 | 设计权限。 | 参数错误、模型格式错误、版本冲突、无权限。 |
+| 发布版本 | `POST /api/basic-distributed/flows/{definition_id}/publish` | 将草稿发布为可执行版本，发布前执行后端模型校验。 | `definition_id`、发布说明、版本策略。 | `definition_id`、`flow_code`、`version`、`status`、`publish_time`。 | 发布权限。 | 模型校验失败、状态不允许、版本冲突、无权限。 |
+| 停用版本 | `POST /api/basic-distributed/flows/{definition_id}/disable` | 停用已发布版本，阻止新执行请求进入该版本。 | `definition_id`、停用原因。 | `definition_id`、`status`、`update_time`。 | 发布或管理权限。 | 定义不存在、状态不允许、运行中依赖限制、无权限。 |
+| 模型校验 | `POST /api/basic-distributed/flows/model/validate` | 对前端模型执行保存前或发布前校验。 | `flow_type`、`model_content`、可选 `definition_id`。 | `valid`、`errors`、`warnings`、`normalized_model`。 | 设计权限。 | JSON 非法、节点缺失、连线非法、规则链 DAG 环、节点类型混用。 |
+| 启动工作流 | `POST /api/basic-distributed/workflows/start` | 按已发布工作流定义创建实例。 | `flow_code`、可选 `version`、`business_key`、`variables`、`trace_id`。 | `instance_id`、`flow_code`、`version`、`status`、`trace_id`。 | 执行权限。 | 定义未发布、版本不存在、业务键冲突、参数错误、无权限。 |
+| 执行规则链 | `POST /api/basic-distributed/rulechains/execute` | 按已发布规则链定义处理单次消息。 | `flow_code`、可选 `version`、`message_id`、`source`、`payload`、`trace_id`。 | `exec_id`、`status`、`result_data`、`duration_ms`、`trace_id`。 | 执行权限，必要时独立限流授权。 | 定义未发布、DAG 不可执行、节点执行失败、超时、限流、无权限。 |
+| 查询实例 | `GET /api/basic-distributed/workflows/instances`、`GET /api/basic-distributed/workflows/instances/{instance_id}` | 查询工作流实例列表或详情。 | `flow_code`、`business_key`、`status`、时间范围、分页参数或 `instance_id`。 | 列表分页或实例详情、当前节点、变量摘要、状态时间。 | 实例查看权限。 | 实例不存在、参数错误、无权限。 |
+| 查询执行日志 | `GET /api/basic-distributed/execution-logs`、`GET /api/basic-distributed/execution-logs/{trace_id}` | 按流程、实例、执行、节点或链路查询执行日志。 | `flow_type`、`flow_code`、`instance_id`、`exec_id`、`trace_id`、`status`、时间范围、分页参数。 | 日志分页、节点明细、错误码、耗时统计、链路摘要。 | 日志查看权限。 | 日志不存在、查询范围过大、参数错误、无权限。 |
+| 调试预览 | `POST /api/basic-distributed/flows/debug/preview` | 使用草稿或指定模型进行模拟执行，返回路径和节点输出。 | `flow_type`、`model_content` 或 `definition_id`、模拟输入、调试选项、`trace_id`。 | `preview_id`、`route_path`、`node_outputs`、`errors`、`trace_id`。 | 设计或调试权限。 | 模型校验失败、模拟输入非法、调试超时、无权限。 |
+| 导入流程 | `POST /api/basic-distributed/flows/import` | 导入统一 JSON Schema，生成草稿或新版本。 | 导入文件或 JSON、冲突处理策略、目标 `flow_code`。 | `definition_id`、`flow_code`、`version`、`status`、导入校验结果。 | 设计权限。 | JSON 非法、版本冲突、模型校验失败、无权限。 |
+| 导出流程 | `GET /api/basic-distributed/flows/{definition_id}/export` | 导出流程定义 JSON，支持评审、备份和迁移。 | `definition_id`、导出格式选项。 | `flow_code`、`version`、`model_content`、元数据。 | 设计或查看权限。 | 定义不存在、状态不可导出、无权限。 |
 
 ## 14. 安全设计
 
